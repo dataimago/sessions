@@ -29,7 +29,9 @@ presentation repository pinned to a commit.
   from the bundle. Code must never renumber, rewrite or mint passage ids.
 - **Provenance travels with every result**: repository, commit, manifest hash, chunker,
   embedding model (`provenance()` in `src/lib/library.ts`).
-- **One vendor file.** Only `src/lib/models.ts` names a model provider or model id.
+- **One vendor file.** Only `src/lib/models.ts` names a model provider or model id;
+  pages that disclose the model use `askModelLabel()`. (`llms.txt` naming an MCP *client*,
+  such as Claude Code, in its setup line is not a model reference.)
 
 ## Defect classes to look for
 
