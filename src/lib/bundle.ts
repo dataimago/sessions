@@ -25,6 +25,8 @@ export const CorpusBundleSchema = z.object({
     repository: z.string(),
     commitSha: z.string().regex(/^[0-9a-f]{40}$/),
     manifestSha256: z.string().regex(/^[0-9a-f]{64}$/),
+    /** The SessionSpec the session frame came from. */
+    specSha256: z.string().regex(/^[0-9a-f]{64}$/),
     chunker: z.string(),
     site: z.url(),
   }),

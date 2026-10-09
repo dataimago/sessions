@@ -6,7 +6,7 @@
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 
 import { clientIp, corsPreflight } from '@/lib/api';
-import { counterStore, hit } from '@/lib/limits';
+import { counterStore, hitOrAllow } from '@/lib/limits';
 import { buildMcpServer } from '@/lib/mcp';
 import { siteOrigin } from '@/lib/site';
 
@@ -22,7 +22,7 @@ export function OPTIONS() {
 }
 
 async function serve(request: Request): Promise<Response> {
-  if (!(await hit(counterStore(), 'mcp', clientIp(request), 120, 60))) {
+  if (!(await hitOrAllow(counterStore(), 'mcp', clientIp(request), 120, 60))) {
     return Response.json(
       { jsonrpc: '2.0', error: { code: -32000, message: 'Rate limited; try again in a minute.' }, id: null },
       { status: 429, headers: { ...CORS, 'retry-after': '60' } },

@@ -7,7 +7,7 @@
  */
 import { randomUUID } from 'node:crypto';
 
-import { counterStore, hit } from './limits';
+import { counterStore, hitOrAllow } from './limits';
 import { provenance, type Collection, type Provenance } from './library';
 
 export type ApiErrorCode =
@@ -102,7 +102,7 @@ export async function handle(
   const ctx: Ctx = { requestId: randomUUID(), startedAt: Date.now(), endpoint };
   try {
     const limit = opts.rateLimit === undefined ? { bucket: 'read', perMinute: READ_LIMIT_PER_MINUTE } : opts.rateLimit;
-    if (limit && !(await hit(counterStore(), limit.bucket, clientIp(request), limit.perMinute, 60))) {
+    if (limit && !(await hitOrAllow(counterStore(), limit.bucket, clientIp(request), limit.perMinute, 60))) {
       return errorResponse(ctx, 'RATE_LIMITED', 'Too many requests; try again in a minute.');
     }
     return await fn(ctx);

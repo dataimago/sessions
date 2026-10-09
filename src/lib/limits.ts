@@ -99,6 +99,28 @@ export async function hit(
   return count <= limit;
 }
 
+/**
+ * `hit` for the read API and MCP, which cost nothing to serve: when the
+ * counter store fails (Redis down or out of quota), allow the request rather
+ * than take the library offline. Ask never uses this; its limits and spend cap
+ * fail closed.
+ */
+export async function hitOrAllow(
+  s: CounterStore,
+  bucket: string,
+  key: string,
+  limit: number,
+  windowSec: number,
+  now = Date.now(),
+): Promise<boolean> {
+  try {
+    return await hit(s, bucket, key, limit, windowSec, now);
+  } catch (err) {
+    console.error(`rate limit ${bucket}: counter store unavailable (${(err as Error)?.name ?? 'Error'}); allowing`);
+    return true;
+  }
+}
+
 export const MICRO = 1_000_000;
 
 export function dailyCapUsd(): number {

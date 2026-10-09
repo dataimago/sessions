@@ -35,6 +35,7 @@ export interface Provenance {
   repository: string;
   commitSha: string;
   manifestSha256: string;
+  specSha256: string;
   chunker: string;
   site: string;
   embeddingModel: string | null;

@@ -5,6 +5,7 @@
     "repository": "dbetebenner/AIME_2026_Panel_Presentation",
     "commitSha": "1c5661a36056eda79af61c49937f30eecc6e87e2",
     "manifestSha256": "b6f9d682a3d125fc385b0523a88a308c33a79dea6b1357f7c3765027e4d421dd",
+    "specSha256": "8bea911cc596c4dbc46e3374754163636d7a5a90436aea442d12754de7bce341",
     "chunker": "chunk-v1:500/60",
     "site": "https://dbetebenner.github.io/AIME_2026_Panel_Presentation/"
   },

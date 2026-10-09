@@ -214,7 +214,7 @@ export function buildMcpServer(opts: { origin: string; embed?: (q: string) => Pr
     'get_provenance',
     {
       title: 'Get provenance',
-      description: 'Where a collection comes from: repository, pinned commit, manifest hash, chunker and embedding model.',
+      description: 'Where a collection comes from: repository, pinned commit, manifest hash, session-spec hash, chunker and embedding model.',
       inputSchema: { collection: collectionArg },
       annotations: READ_ONLY,
     },

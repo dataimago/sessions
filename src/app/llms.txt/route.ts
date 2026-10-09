@@ -9,7 +9,7 @@ export function GET(request: Request) {
     '',
     '> The shared, citable materials of conference sessions: statements, slides, briefs, bios, and the chair\'s notes, one collection per session. Read-only. Each collection is pinned to a commit of the public repository its participants chose to share.',
     '',
-    'Collections hold materials prepared before each session, not a transcript of the session. Cite passage ids; every response carries the source repository, commit and manifest hash.',
+    'Collections hold materials prepared before each session, not a transcript of the session. Cite passage ids; every response carries the source repository, commit, manifest hash and session-spec hash.',
     '',
     '## MCP',
     '',
