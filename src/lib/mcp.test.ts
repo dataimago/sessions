@@ -38,6 +38,17 @@ describe('mcp', () => {
     expect(passage.provenance.commitSha).toMatch(/^[0-9a-f]{40}$/);
   });
 
+  it('names the searched collection even when nothing matches', async () => {
+    const client = await connect();
+    const none = await client.callTool({
+      name: 'search_corpus',
+      arguments: { query: 'zzqxv qqzzx', collection: 'aime-2026/ai-native-profession' },
+    });
+    const found = none.structuredContent as Structured & { passages: unknown[]; provenance: { collection: string }[] };
+    expect(found.passages).toEqual([]);
+    expect(found.provenance.map((p) => p.collection)).toEqual(['aime-2026/ai-native-profession']);
+  });
+
   it('reports unknown collections and passages as tool errors', async () => {
     const client = await connect();
     const bad = await client.callTool({ name: 'list_documents', arguments: { collection: 'nope/none' } });

@@ -182,7 +182,9 @@ export function buildMcpServer(opts: { origin: string; embed?: (q: string) => Pr
           text: h.chunk.text,
           url: url(passageHref(c, h.chunk)),
         })),
-        provenance: [...new Set(hits.map(({ c }) => c))].map(provenance),
+        // Every collection searched, hits or not: an empty result still names
+        // the pinned commit it came from.
+        provenance: (targets as Collection[]).map(provenance),
       });
     },
   );

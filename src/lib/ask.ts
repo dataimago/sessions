@@ -94,6 +94,8 @@ export function buildPrompt(c: Collection, question: string, hits: PassageHit[])
       return `- ${p.handle}: ${p.displayName} (${p.affiliation}), ${roleLabel(p)}${docs.length ? `; materials: ${docs.join('; ')}` : '; no shared materials'}`;
     })
     .join('\n');
+  // Every bundle string and the question are fenced, not only passage text:
+  // none of them may open or close a passage element.
   const passages = hits
     .map((h) => {
       const owner = c.participants.get(h.document.owner)?.displayName ?? h.document.owner;
@@ -101,15 +103,15 @@ export function buildPrompt(c: Collection, question: string, hits: PassageHit[])
       return `<passage id="${attr(h.chunk.id)}" document="${attr(h.document.title)}" owner="${attr(owner)}" label="${attr(h.document.label)}"${where ? ` locator="${attr(where)}"` : ''}>\n${fenced(h.chunk.text)}\n</passage>`;
     })
     .join('\n\n');
-  return `Session: ${s.title} (${s.event}, ${s.heldOn}).
+  return `Session: ${fenced(`${s.title} (${s.event}, ${s.heldOn})`)}.
 
 Participants (handle: name, role):
-${people}
+${fenced(people)}
 
 Passages retrieved for this question:
 ${passages || '(none)'}
 
-Question: ${question}`;
+Question: ${fenced(question)}`;
 }
 
 export function costUsd(usage: { inputTokens: number; outputTokens: number }): number {
@@ -121,6 +123,23 @@ export function costUsd(usage: { inputTokens: number; outputTokens: number }): n
 export function estimateCostUsd(prompt: string): number {
   const inputTokens = Math.ceil((SYSTEM_PROMPT.length + prompt.length) / 3);
   return costUsd({ inputTokens, outputTokens: MAX_OUTPUT_TOKENS });
+}
+
+export const DEFAULT_ABSTENTION = 'The shared materials do not address this question.';
+export const MAX_REASON_CHARS = 300;
+
+/**
+ * The model's reason for abstaining, bounded: at most two sentences and
+ * MAX_REASON_CHARS, so an abstention cannot carry an uncited answer at length.
+ * It is shown as the reason, never as an answer.
+ */
+export function abstentionReason(raw: string | undefined): string {
+  const text = (raw ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return DEFAULT_ABSTENTION;
+  const sentences = text.match(/[^.!?]+[.!?]+(\s|$)/g) ?? [text];
+  let out = sentences.slice(0, 2).join('').trim();
+  if (out.length > MAX_REASON_CHARS) out = `${out.slice(0, MAX_REASON_CHARS).replace(/\s+\S*$/, '')} …`;
+  return out || DEFAULT_ABSTENTION;
 }
 
 export function validateOutput(c: Collection, out: AskOutput, retrievedIds: Set<string>): Pick<AskAnswer, 'status' | 'segments' | 'abstention'> {
@@ -145,7 +164,7 @@ export function validateOutput(c: Collection, out: AskOutput, retrievedIds: Set<
       status: 'abstained',
       segments: out.status === 'abstained' ? [] : segments,
       abstention: {
-        reason: out.abstention?.reason?.trim() || 'The shared materials do not address this question.',
+        reason: abstentionReason(out.abstention?.reason),
         askInstead,
       },
     };
