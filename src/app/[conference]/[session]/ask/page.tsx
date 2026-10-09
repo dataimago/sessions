@@ -3,6 +3,7 @@ import type { Metadata } from 'next';
 import { AskForm } from '@/components/ask-form';
 import { SessionNav } from '@/components/session-nav';
 import { collectionPath } from '@/lib/library';
+import { askModelLabel } from '@/lib/models';
 import { collectionOr404, sessionStaticParams, type SessionPageProps } from '@/lib/page-params';
 
 export const dynamicParams = false;
@@ -18,7 +19,7 @@ export default async function AskPage({ params }: SessionPageProps) {
       <header className="space-y-2">
         <h1 className="text-2xl font-semibold">Ask the materials</h1>
         <p className="text-stone-700">
-          A language model (Claude) answers from passages it retrieves from this session&apos;s shared materials, and cites them. Each
+          A language model ({askModelLabel()}) answers from passages it retrieves from this session&apos;s shared materials, and cites them. Each
           statement is marked as stated in the materials or as an interpretation across them. When the materials do not answer
           a question, it says so and names who would know.
         </p>

@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import { decodeVector, encodeVector, formatLocator, parseBundle } from './bundle';
 import { documentsByOwner, getCollectionById, listCollections, search } from './library';
-import { embeddingModelId } from './models';
+import { askModelLabel, embeddingModelId } from './models';
 
 describe('library', () => {
   it('bundles the first collection with every chunk embedded', () => {
@@ -39,5 +39,9 @@ describe('library', () => {
     expect(formatLocator({ page: 3 })).toBe('page 3');
     expect(formatLocator({ lineStart: 4, lineEnd: 9 })).toBe('lines 4–9');
     expect(formatLocator({})).toBe('');
+  });
+
+  it('names the ask model through models.ts', () => {
+    expect(askModelLabel()).toMatch(/\S/);
   });
 });

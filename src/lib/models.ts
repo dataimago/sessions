@@ -31,6 +31,15 @@ export function askModelId(): string {
   return env('SESSIONS_MODEL_ASK') ?? DEFAULT_ASK_MODEL;
 }
 
+/** How pages name the ask model, so users know which model answers. */
+const ASK_MODEL_LABELS: Record<string, string> = { 'claude-sonnet-5-5': 'Claude Sonnet 5.5' };
+
+/** The display name of the configured ask model (its id when unlisted). */
+export function askModelLabel(): string {
+  const id = askModelId();
+  return ASK_MODEL_LABELS[id] ?? id;
+}
+
 export function embeddingModelId(): string {
   return env('SESSIONS_MODEL_EMBEDDING') ?? DEFAULT_EMBEDDING_MODEL;
 }
