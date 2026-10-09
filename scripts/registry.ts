@@ -6,7 +6,8 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { EmbeddingsSchema, parseBundle } from '../src/lib/bundle.ts';
+import { EmbeddingsSchema, checkEmbeddings, parseBundle } from '../src/lib/bundle.ts';
+import { EMBEDDING_DIMENSIONS, embeddingModelId } from '../src/lib/models.ts';
 
 const root = new URL('..', import.meta.url).pathname;
 const contentDir = join(root, 'content');
@@ -26,7 +27,10 @@ for (const conference of readdirSync(contentDir).sort()) {
     }
     const embPath = join(confDir, session, 'embeddings.json');
     const embeddings = existsSync(embPath);
-    if (embeddings) EmbeddingsSchema.parse(JSON.parse(readFileSync(embPath, 'utf8')));
+    if (embeddings) {
+      const emb = EmbeddingsSchema.parse(JSON.parse(readFileSync(embPath, 'utf8')));
+      checkEmbeddings(bundle, emb, { model: embeddingModelId(), dimensions: EMBEDDING_DIMENSIONS });
+    }
     entries.push({ collection, dir: `${conference}/${session}`, embeddings });
   }
 }

@@ -7,13 +7,14 @@ import { RAW_COLLECTIONS } from '@/generated/registry';
 import {
   COLLECTION_RE,
   EmbeddingsSchema,
-  decodeVector,
+  checkEmbeddings,
   parseBundle,
   type BundleChunk,
   type BundleDocument,
   type BundleParticipant,
   type CorpusBundle,
 } from './bundle';
+import { EMBEDDING_DIMENSIONS, embeddingModelId } from './models';
 import { buildBm25, hybridSearch, type Bm25Index, type SearchHit } from './search';
 
 export interface Collection {
@@ -50,11 +51,8 @@ function load(raw: { bundle: unknown; embeddings: unknown }): Collection {
   let embeddingDimensions: number | null = null;
   if (raw.embeddings) {
     const emb = EmbeddingsSchema.parse(raw.embeddings);
-    vectors = new Map();
-    for (const c of bundle.chunks) {
-      const v = emb.vectors[c.id];
-      if (v) vectors.set(c.id, decodeVector(v));
-    }
+    // Query vectors come from the configured model, so chunk vectors must too.
+    vectors = checkEmbeddings(bundle, emb, { model: embeddingModelId(), dimensions: EMBEDDING_DIMENSIONS });
     embeddingModel = emb.model;
     embeddingDimensions = emb.dimensions;
   }

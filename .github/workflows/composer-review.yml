@@ -99,7 +99,13 @@ jobs:
           # rather than silently. NO `|| true`: a swallowed diff failure hands the
           # reviewer an empty pr.diff, and an empty change set reads as
           # "## No actionable findings" — a green workflow over nothing reviewed.
-          if ! git diff "${BASE_SHA}...${HEAD_SHA}" > pr.diff; then
+          # Generated files are left out so src/ fits under the cap: the bundles
+          # and vectors in content/ are produced by sesh-ai's reviewed bundler
+          # and the indexer, and the lockfile by pnpm.
+          if ! git diff "${BASE_SHA}...${HEAD_SHA}" -- . \
+              ':(exclude,glob)content/**/embeddings.json' \
+              ':(exclude,glob)content/**/bundle.json' \
+              ':(exclude)pnpm-lock.yaml' > pr.diff; then
             echo "::error::git diff ${BASE_SHA}...${HEAD_SHA} failed — refusing to review without the diff" >&2
             exit 1
           fi
@@ -124,7 +130,9 @@ jobs:
           ${RULES}
 
           Review ONLY the changes between base ${BASE_SHA} and head
-          ${HEAD_SHA} of pull request #${PR_NUMBER}. THE DIFF IS ALREADY ON DISK
+          ${HEAD_SHA} of pull request #${PR_NUMBER}. Generated files
+          (content/**/bundle.json, content/**/embeddings.json, pnpm-lock.yaml)
+          are left out of the diff on purpose. THE DIFF IS ALREADY ON DISK
           at ./pr.diff — read that file first and treat it as the authoritative
           statement of what changed. Do not attempt to run git; this job cannot.
           If a finding concerns a file that does not appear in pr.diff, it is out

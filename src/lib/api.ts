@@ -84,7 +84,7 @@ export function errorResponse(ctx: Ctx, code: ApiErrorCode, message: string): Re
   );
 }
 
-export function clientIp(request: Request): string {
+export function clientIp(request: { headers: { get(name: string): string | null } }): string {
   // Vercel sets x-forwarded-for; the first address is the client.
   const fwd = request.headers.get('x-forwarded-for');
   return fwd?.split(',')[0]?.trim() || request.headers.get('x-real-ip') || 'unknown';

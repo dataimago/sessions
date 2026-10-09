@@ -50,6 +50,11 @@ presentation repository pinned to a commit.
 - `content/**/bundle.json` and `embeddings.json` are generated and committed on purpose:
   the deploy has no build-time network access to the source repository or the embedding
   API.
+- `/llms.txt` and `/api/openapi.json` serve constant text with no per-request cost; they
+  are not rate-limited on purpose, because a Redis-backed limit would cost more than the
+  response. Routes that embed a query or call a model must be limited.
+- The review diff leaves out `content/**/bundle.json`, `content/**/embeddings.json` and
+  `pnpm-lock.yaml` (generated); a finding about them needs the file read at the head.
 - Searching without an OpenAI key falls back to lexical search; `semantic: false` is
   expected, not an error.
 - `AGENTS.md` / `CLAUDE.md` carry a block that `next dev` writes; it is committed so the

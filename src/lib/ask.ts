@@ -76,6 +76,16 @@ Rules:
 - Preserve disagreement between participants; do not merge their positions.
 - Be concise: at most about 200 words in total, in plain sentences.`;
 
+/** An attribute value that cannot close its quotes or open a tag. */
+function attr(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+/** Passage text that cannot open or close a passage element (the fence). */
+export function fenced(text: string): string {
+  return text.replace(/<(\/?)(passage)/gi, '&lt;$1$2');
+}
+
 export function buildPrompt(c: Collection, question: string, hits: PassageHit[]): string {
   const s = c.bundle.session;
   const people = s.participants
@@ -88,7 +98,7 @@ export function buildPrompt(c: Collection, question: string, hits: PassageHit[])
     .map((h) => {
       const owner = c.participants.get(h.document.owner)?.displayName ?? h.document.owner;
       const where = formatLocator(h.chunk.locator);
-      return `<passage id="${h.chunk.id}" document="${h.document.title}" owner="${owner}" label="${h.document.label}"${where ? ` locator="${where}"` : ''}>\n${h.chunk.text}\n</passage>`;
+      return `<passage id="${attr(h.chunk.id)}" document="${attr(h.document.title)}" owner="${attr(owner)}" label="${attr(h.document.label)}"${where ? ` locator="${attr(where)}"` : ''}>\n${fenced(h.chunk.text)}\n</passage>`;
     })
     .join('\n\n');
   return `Session: ${s.title} (${s.event}, ${s.heldOn}).

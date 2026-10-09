@@ -95,6 +95,34 @@ export const EmbeddingsSchema = z.object({
 });
 export type Embeddings = z.infer<typeof EmbeddingsSchema>;
 
+/**
+ * Embeddings are usable only when they were made by the configured model at
+ * the configured size, and cover exactly the bundle's chunks. Throws on any
+ * mismatch, so a bad file fails the build instead of scoring silently.
+ */
+export function checkEmbeddings(
+  bundle: CorpusBundle,
+  emb: Embeddings,
+  expected: { model: string; dimensions: number },
+): Map<string, Float32Array> {
+  const where = bundle.collection;
+  if (emb.model !== expected.model || emb.dimensions !== expected.dimensions) {
+    throw new Error(`${where}: embeddings are ${emb.model}@${emb.dimensions}, expected ${expected.model}@${expected.dimensions}`);
+  }
+  const ids = new Set(bundle.chunks.map((c) => c.id));
+  const extra = Object.keys(emb.vectors).filter((id) => !ids.has(id));
+  if (extra.length > 0) throw new Error(`${where}: ${extra.length} embedding(s) for chunks not in the bundle`);
+  const vectors = new Map<string, Float32Array>();
+  for (const id of ids) {
+    const b64 = emb.vectors[id];
+    if (!b64) throw new Error(`${where}: no embedding for ${id}`);
+    const v = decodeVector(b64);
+    if (v.length !== expected.dimensions) throw new Error(`${where}: ${id} has ${v.length} dimensions`);
+    vectors.set(id, v);
+  }
+  return vectors;
+}
+
 export function decodeVector(b64: string): Float32Array {
   const bytes = Buffer.from(b64, 'base64');
   return new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4).slice();
