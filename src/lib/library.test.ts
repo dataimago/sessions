@@ -4,13 +4,14 @@ import { describe, expect, it } from 'vitest';
 
 import { decodeVector, encodeVector, formatLocator, parseBundle } from './bundle';
 import { documentsByOwner, getCollectionById, listCollections, search } from './library';
+import { embeddingModelId } from './models';
 
 describe('library', () => {
   it('bundles the first collection with every chunk embedded', () => {
     const c = getCollectionById('aime-2026/ai-native-profession');
     expect(c?.bundle.documents.length).toBe(23);
     expect(c?.vectors?.size).toBe(c?.bundle.chunks.length);
-    expect(c?.embeddingModel).toBe('text-embedding-3-large');
+    expect(c?.embeddingModel).toBe(embeddingModelId());
     expect(c?.bundle.session.participants.map((p) => p.handle)).not.toContain('operator');
   });
 

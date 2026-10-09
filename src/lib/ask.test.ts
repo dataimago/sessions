@@ -117,4 +117,15 @@ describe('ask', () => {
     expect(result.passages).toHaveLength(hits.length);
     expect(result.segments[0]?.citations).toEqual([first]);
   });
+
+  it('leaves the cost unknown when the provider reports no usage', async () => {
+    const result = await answer(c, 'What does Briggs propose?', hits, {
+      generate: async () => ({
+        output: { status: 'abstained', segments: [], abstention: { reason: 'Not covered.', askInstead: [] } },
+        usage: { inputTokens: 900 },
+        model: 'test-model',
+      }),
+    });
+    expect(result.usage).toEqual({ inputTokens: 900, outputTokens: null, costUsd: null });
+  });
 });

@@ -55,7 +55,8 @@ export interface AskAnswer {
   abstention: { reason: string; askInstead: { handle: string; displayName: string; role: string }[] } | null;
   passages: { id: string; documentId: string; documentTitle: string; owner: string; locator: string }[];
   model: string;
-  usage: { inputTokens: number; outputTokens: number; costUsd: number };
+  /** costUsd is null when the provider reported no usage; the reservation then stands. */
+  usage: { inputTokens: number | null; outputTokens: number | null; costUsd: number | null };
 }
 
 export function cleanQuestion(raw: unknown): string | null {
@@ -174,7 +175,10 @@ export function validateOutput(c: Collection, out: AskOutput, retrievedIds: Set<
 
 export interface AskDeps {
   embed: (text: string) => Promise<Float32Array | null>;
-  generate: (args: { system: string; prompt: string }) => Promise<{ output: unknown; usage: { inputTokens: number; outputTokens: number }; model: string }>;
+  generate: (args: {
+    system: string;
+    prompt: string;
+  }) => Promise<{ output: unknown; usage: { inputTokens?: number; outputTokens?: number }; model: string }>;
 }
 
 export const liveDeps: AskDeps = {
@@ -189,11 +193,12 @@ export const liveDeps: AskDeps = {
       providerOptions: ASK_PROVIDER_OPTIONS as never,
       maxOutputTokens: MAX_OUTPUT_TOKENS,
       abortSignal: AbortSignal.timeout(45_000),
-      maxRetries: 1,
+      // One reservation covers one billed call, so the SDK does not retry.
+      maxRetries: 0,
     });
     return {
       output: result.output,
-      usage: { inputTokens: result.usage.inputTokens ?? 0, outputTokens: result.usage.outputTokens ?? 0 },
+      usage: { inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens },
       model: typeof model === 'string' ? model : model.modelId,
     };
   },
@@ -223,6 +228,13 @@ export async function answer(
       locator: formatLocator(h.chunk.locator),
     })),
     model,
-    usage: { ...usage, costUsd: costUsd(usage) },
+    usage:
+      usage.inputTokens === undefined || usage.outputTokens === undefined
+        ? { inputTokens: usage.inputTokens ?? null, outputTokens: usage.outputTokens ?? null, costUsd: null }
+        : {
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            costUsd: costUsd({ inputTokens: usage.inputTokens, outputTokens: usage.outputTokens }),
+          },
   };
 }

@@ -71,16 +71,23 @@ export async function POST(request: Request, { params }: SessionParams) {
         return errorResponse(ctx, 'RATE_LIMITED', "Today's question budget is spent. It resets at 00:00 UTC; search still works.");
       }
 
+      let result: Awaited<ReturnType<typeof answer>>;
       try {
-        const result = await answer(c, question, hits, liveDeps);
-        await settle(result.usage.costUsd);
-        await countAsk(store, result.status);
-        return ok(ctx, result, c);
+        result = await answer(c, question, hits, liveDeps);
       } catch {
         // The reservation stands: a failed call may still have been billed.
-        await countAsk(store, 'failed');
+        await countAsk(store, 'failed').catch(() => {});
         throw new ApiError('UPSTREAM_ERROR', 'The answer could not be produced. Try again, or use search.');
       }
+      // The answer is paid for, so bookkeeping failures must not discard it.
+      // Unknown cost (no usage reported): the full reservation stands.
+      try {
+        if (result.usage.costUsd !== null) await settle(result.usage.costUsd);
+        await countAsk(store, result.status);
+      } catch (err) {
+        console.error(`[${ctx.requestId}] ask: bookkeeping failed (${(err as Error)?.name ?? 'Error'}); answer returned`);
+      }
+      return ok(ctx, result, c);
     },
     { rateLimit: false },
   );
