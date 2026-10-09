@@ -4,7 +4,7 @@
 conference sessions, for people (browse, search, ask with citations) and for AI agents
 (MCP, REST, `llms.txt`). Read-only, no login.
 
-A Level-3 app spawned from the sesh vertical. Decision of record:
+A company-operated Level-2 surface of the sesh vertical (not a user-owned Level-3 app). Decision of record:
 `sesh-ai/wiki/decisions/sessions-library.md`.
 
 ## Where content comes from
