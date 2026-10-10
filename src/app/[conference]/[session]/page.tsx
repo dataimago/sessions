@@ -69,9 +69,12 @@ export default async function SessionPage({ params }: SessionPageProps) {
             <h3 className="text-base font-semibold">{participant?.displayName ?? owner}</h3>
             <ul className="space-y-1">
               {documents.map((d) => (
-                <li key={d.id} className="flex flex-wrap items-baseline gap-2">
-                  <span className="chip">{d.label}</span>
-                  <Link href={`${base}/documents/${d.id}`}>{d.title}</Link>
+                <li key={d.id} className="flex items-baseline gap-2">
+                  {/* The kind stays beside its title; a long title wraps in its own column. */}
+                  <span className="chip shrink-0">{d.label}</span>
+                  <Link className="min-w-0" href={`${base}/documents/${d.id}`}>
+                    {d.title}
+                  </Link>
                 </li>
               ))}
             </ul>
