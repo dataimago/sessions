@@ -282,7 +282,7 @@ jobs:
           # from BASE, never from the PR head (AGENTS.md, CLAUDE.md, .cursor/,
           # .claude/, .mcp.json, ignore files, nested copies too). The PR's own
           # versions are still in pr.diff for the reviewer to read as changes.
-          PATTERN='(^|/)(AGENTS(\.override)?\.md|CLAUDE(\.local)?\.md|GEMINI\.md|\.cursorrules|\.cursorignore|\.cursorindexingignore|\.mcp\.json)$|(^|/)\.(cursor|claude|agents|codex|gemini)(/|$)'
+          PATTERN='(^|/)((AGENTS|CLAUDE|GEMINI)(\.local|\.override)?\.md|\.cursorrules|\.cursorignore|\.cursorindexingignore|\.mcp\.json)$|(^|/)\.(cursor|claude|agents|codex|gemini)(/|$)'
           git ls-tree -r -z --name-only "$HEAD_SHA" | { grep -zE "$PATTERN" || true; } | xargs -0 -r rm -rf --
           git ls-tree -r -z --name-only "$BASE_SHA" | { grep -zE "$PATTERN" || true; } | xargs -0 -r git checkout "$BASE_SHA" --
           # ---- Isolated, read-only copy of the tree for the agent user (no .git).
@@ -423,8 +423,9 @@ jobs:
           # messages both rebuild the block) and split on the literal markers. Exactly one
           # closing marker is required; none (no block, unclosed, wrong nonce) or two or more
           # (a draft and a final, which could put a clean verdict over findings) give empty
-          # output, the step fails and the comment job posts "did not complete". Inside the
-          # block only the text after the last opening marker counts. No fallback to `result`.
+          # output, the step fails and the comment job posts "did not complete". A block that
+          # holds both the clean heading and a finding heading is empty too (a parser reads
+          # the clean line first). Inside the block only the text after the last opening marker counts. No fallback to `result`.
           extract() {
             # shellcheck disable=SC2016 # $open, $close and $n are jq variables
             jq -rsj --arg n "$1" '
@@ -437,7 +438,9 @@ jobs:
               | if length != 2 then ""
                 else .[0] | split($open)
                   | if length < 2 then ""
-                    else last | ltrimstr("\n") | rtrimstr("\n") end
+                    else last | ltrimstr("\n") | rtrimstr("\n")
+                      | if test("(^|\\n)## No actionable findings") and test("(^|\\n)(### \\[P[0-3]\\]|(### )?Alignment concern:)") then "" else . end
+                    end
                 end'
           }
           # Fixture self-test of the extractor (runs before the agent).
@@ -461,13 +464,14 @@ jobs:
           f_unclosed() { xmsg "$XOPEN"$'\n'"$XF"; }
           f_wrong_nonce() { xmsg "<!-- review:0000 -->"$'\n'"$XC"$'\n'"<!-- /review:0000 -->"; }
           f_quoted_template() { xmsg "Quoting: <!-- review:\${NONCE} --> ..."; xblk "$XF"; }
+          f_mixed_block() { xblk "$XF"$'\n\n'"$XC"; }
           f_empty() { :; }
           xfail=0
           xcheck() { local got; got=$("$2" | extract "$XN"); if [ "$got" != "$1" ]; then xfail=$((xfail+1)); echo "extract self-test FAIL: $2" >&2; fi; }
           xcheck "$XF" f_findings; xcheck "$XC" f_clean; xcheck "$XF" f_trailing_read; xcheck "$XF" f_trailing_refused
           xcheck "$XF" f_trailing_shell; xcheck "$XF" f_prose_around; xcheck "" f_two_blocks; xcheck "$XF" f_deltas
           xcheck "$XF" f_stray_opener; xcheck "" f_no_block; xcheck "" f_unclosed; xcheck "" f_wrong_nonce
-          xcheck "$XF" f_quoted_template; xcheck "" f_empty
+          xcheck "$XF" f_quoted_template; xcheck "" f_mixed_block; xcheck "" f_empty
           if [ "$xfail" -ne 0 ]; then echo "::error::the review-extraction self-test failed ($xfail fixtures)" >&2; exit 1; fi
           # ---- Run the reviewer. --trust only skips the interactive trust prompt.
           # The key reaches the CLI as the review user's environment only.
