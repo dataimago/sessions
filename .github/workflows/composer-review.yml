@@ -430,7 +430,7 @@ jobs:
               | [ .[] | select(.type=="assistant")
                   | [ .message.content[]? | select(.type=="text") | .text ] | join("") ]
               | join("")
-              | [ scan($open + "[ \\t]*\\n(?<b>.*?)\\n[ \\t]*<!-- /review:" + $n + " -->"; "m") | .[0] ]
+              | [ scan("(?s)" + $open + "[ \\t]*\\n(.*?)\\n[ \\t]*<!-- /review:" + $n + " -->"; "g") | .[0] ]
               | (last // "")
               | split($open) | last // ""
               | sub("^[ \\t]*\\n"; "")'
