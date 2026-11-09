@@ -130,8 +130,10 @@ jobs:
 
       # A step that hangs must FAIL (the comment job then posts "did not
       # complete"), not run into the job limit, which ends the job "cancelled".
-      # The step limits (5 + 3 + 44 + 2 for the upload = 54 minutes) leave 16
+      # The step limits (5 + 3 + 50 + 2 for the upload = 60 minutes) leave 10
       # minutes under the 70-minute job limit for the gate step and post actions.
+      # The review step's 50 covers setup, the 40-minute agent, its 60-second
+      # kill grace and the post-run checks.
       - name: Checkout PR head (no credentials persist)
         if: steps.gate.outputs.enabled == 'true'
         timeout-minutes: 5
@@ -164,7 +166,7 @@ jobs:
 
       - name: Review diff with Grok 4.6 (no GitHub credentials)
         if: steps.gate.outputs.enabled == 'true'
-        timeout-minutes: 44
+        timeout-minutes: 50
         env:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
           # GitHub never puts GITHUB_TOKEN in a step's environment unless the
@@ -371,6 +373,27 @@ jobs:
           if sudo -u cursor-review curl -sS --max-time 8 -o /dev/null -x http://127.0.0.1:3128 https://example.com 2>/dev/null; then
             echo "::error::proxy tunnelled to a host outside the allowlist" >&2; exit 1
           fi
+          # Positive control: an allowed host must connect through the proxy (a typo in the
+          # allowlist, or a proxy that denies everything, would otherwise look like a lock
+          # that works and every review would die at the API).
+          PROBE_HOST=${CURSOR_ALLOWED_HOSTS%%,*}
+          if [ -z "$PROBE_HOST" ]; then echo "::error::CURSOR_ALLOWED_HOSTS is empty" >&2; exit 1; fi
+          if ! sudo -u cursor-review curl -sS --retry 2 --max-time 20 -o /dev/null -x http://127.0.0.1:3128 "https://${PROBE_HOST}" 2>/dev/null; then
+            echo "::error::the review user cannot reach ${PROBE_HOST} through the proxy" >&2; exit 1
+          fi
+          # Negative control for the tool-call audit (a check that cannot go red proves
+          # nothing): a successful Shell must be reported, a successful Read and a denied
+          # Shell must not. Runs before the agent, so a broken filter fails fast.
+          # shellcheck disable=SC2016 # $r is a jq variable
+          AUDIT='select(.type=="tool_call" and .subtype=="completed") | .tool_call | to_entries[0] | select((.key|test("^(read|grep|glob|ls|getMcpTools|task|semSearch|readLints|todo|updateTodos|readTodos)ToolCall$")|not) and ((.value.result // {} | keys[0] // "none") as $r | ["permissionDenied","writePermissionDenied","readPermissionDenied","rejected"] | index($r) | not)) | .key'
+          AUDIT_SHELL_OK='{"type":"tool_call","subtype":"completed","tool_call":{"shellToolCall":{"result":{"success":{}}}}}'
+          AUDIT_READ_OK='{"type":"tool_call","subtype":"completed","tool_call":{"readToolCall":{"result":{"success":{}}}}}'
+          AUDIT_SHELL_DENIED='{"type":"tool_call","subtype":"completed","tool_call":{"shellToolCall":{"result":{"permissionDenied":{}}}}}'
+          if [ "$(printf '%s\n' "$AUDIT_SHELL_OK" | jq -r "$AUDIT")" != "shellToolCall" ] \
+             || [ -n "$(printf '%s\n' "$AUDIT_READ_OK" | jq -r "$AUDIT")" ] \
+             || [ -n "$(printf '%s\n' "$AUDIT_SHELL_DENIED" | jq -r "$AUDIT")" ]; then
+            echo "::error::the tool-call audit self-test failed (it must flag a successful Shell and pass a Read and a denied Shell)" >&2; exit 1
+          fi
           # ---- Run the reviewer. --trust only skips the interactive trust prompt.
           # The key reaches the CLI as the review user's environment only.
           export HTTPS_PROXY=http://127.0.0.1:3128 HTTP_PROXY=http://127.0.0.1:3128 NODE_USE_ENV_PROXY=1 CURSOR_CONFIG_DIR="$CFG"
@@ -396,7 +419,9 @@ jobs:
           # review with no separator, and "## No actionable findings" / "### [P1]"
           # stop starting a line: lain's parseReview then reads a clean review as
           # unparsed. `result` is the fallback only when no such text exists.
-          jq -js '(to_entries | map(select(.value.type=="tool_call")) | last | .key // -1) as $t
+          # Todo-list and schema-loading calls (updateTodos, readTodos, getMcpTools) are not a cutoff:
+          # one after the review text would otherwise leave nothing "after the last tool call".
+          jq -js '(to_entries | map(select(.value.type=="tool_call" and ((.value.tool_call // {} | keys[0] // "") | test("^(updateTodos|readTodos|todo|getMcpTools)ToolCall$") | not))) | last | .key // -1) as $t
             | [ to_entries[] | select(.key > $t and .value.type=="assistant")
                 | .value.message.content[]? | select(.type=="text") | .text ] | join("\n\n")' \
             review-events.jsonl > composer-review.md 2>/dev/null || : > composer-review.md
@@ -439,7 +464,7 @@ jobs:
           # WebSearch -> rejected (non-interactive: anything not in `allow` is
           # refused). getMcpTools only loads tool schemas; a Task subagent runs
           # under the same permissions (its Shell was denied).
-          BAD=$(jq -r 'select(.type=="tool_call" and .subtype=="completed") | .tool_call | to_entries[0] | select((.key|test("^(read|grep|glob|ls|getMcpTools|task|semSearch|readLints|todo)ToolCall$")|not) and ((.value.result // {} | keys[0] // "none") as $r | ["permissionDenied","writePermissionDenied","readPermissionDenied","rejected"] | index($r) | not)) | .key' review-events.jsonl | sort -u)
+          BAD=$(jq -r "$AUDIT" review-events.jsonl | sort -u)
           if [ -n "$BAD" ]; then echo "::error::a non-read tool call succeeded: $BAD" >&2; exit 1; fi
           if [ "$(jq -s '[.[]|select(.type=="result")]|last|.is_error' review-events.jsonl)" != "false" ]; then
             echo "::error::the agent's terminal result is missing or an error" >&2; exit 1
