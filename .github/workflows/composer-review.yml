@@ -281,7 +281,7 @@ jobs:
           # from BASE, never from the PR head (AGENTS.md, CLAUDE.md, .cursor/,
           # .claude/, .mcp.json, ignore files, nested copies too). The PR's own
           # versions are still in pr.diff for the reviewer to read as changes.
-          PATTERN='(^|/)(AGENTS(\.override)?\.md|CLAUDE(\.local)?\.md|\.cursorrules|\.cursorignore|\.cursorindexingignore|\.mcp\.json)$|(^|/)\.(cursor|claude|agents|codex|gemini)(/|$)'
+          PATTERN='(^|/)(AGENTS(\.override)?\.md|CLAUDE(\.local)?\.md|GEMINI\.md|\.cursorrules|\.cursorignore|\.cursorindexingignore|\.mcp\.json)$|(^|/)\.(cursor|claude|agents|codex|gemini)(/|$)'
           git ls-tree -r -z --name-only "$HEAD_SHA" | { grep -zE "$PATTERN" || true; } | xargs -0 -r rm -rf --
           git ls-tree -r -z --name-only "$BASE_SHA" | { grep -zE "$PATTERN" || true; } | xargs -0 -r git checkout "$BASE_SHA" --
           # ---- Isolated, read-only copy of the tree for the agent user (no .git).
@@ -489,12 +489,10 @@ jobs:
           trap 'rm -f "$RUNNER_TEMP/key.pat"' EXIT
           ( umask 077; printf '%s' "$CURSOR_API_KEY" | tr -d '[:space:]' > "$RUNNER_TEMP/key.pat" )
           if [ ! -s "$RUNNER_TEMP/key.pat" ]; then echo "::error::CURSOR_API_KEY is empty; refusing to run the leak guard on nothing" >&2; exit 1; fi
-          # The review is the assistant text after the last tool call. The result
-          # event's `result` is the concatenation of every text delta (Cursor CLI
-          # output-format docs), so it glues the model's progress notes onto the
-          # review with no separator, and "## No actionable findings" / "### [P1]"
-          # stop starting a line: lain's parseReview then reads a clean review as
-          # unparsed. `result` is the fallback only when no such text exists.
+          # The CLI's `result` event is the concatenation of every text delta (Cursor CLI
+          # output-format docs), which glues progress notes onto the review and breaks
+          # heading line starts (lain's parseReview then reads a clean review as unparsed);
+          # it is never used.
           # extract() is defined (and tested on fixtures) before the run. No complete
           # block means no review: the empty-output check below fails the step and the
           # comment job posts "did not complete".
@@ -551,7 +549,7 @@ jobs:
       - name: Hand the review to the comment job (artifact, not a token)
         if: steps.gate.outputs.enabled == 'true'
         timeout-minutes: 2
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: composer-review-${{ github.event.pull_request.number }}
           path: composer-review.md
@@ -586,7 +584,7 @@ jobs:
     steps:
       - name: Download the review
         if: needs.review.result == 'success' && needs.review.outputs.enabled == 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: composer-review-${{ github.event.pull_request.number }}
 
