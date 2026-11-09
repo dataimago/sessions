@@ -40,9 +40,11 @@ name: Grok 4.6 PR Review
 #      anything not allowed is refused (WebFetch and WebSearch came back
 #      "rejected", a Task subagent's Shell "permissionDenied"). Reads outside
 #      the workspace (/etc, /home, /tmp, /proc, ...) are denied too, because
-#      `Read(**)` alone let Glob list /home/runner. Narrowing the allow to
-#      /opt/review-ws did not restrict Glob (canary 2026-11-09: /opt/hostedtoolcache
-#      and /usr/lib still listed), so the other system trees are denied by name.
+#      `Read(**)` alone let Glob list /home/runner. Narrowing the allow to the
+#      agent's tree does NOT restrict anything (canary 2026-11-09: with
+#      allow Read(/opt/review-ws/**) files under /opt/az and /opt/pipx were still
+#      read and /opt/hostedtoolcache still listed); only denies bind. So the system
+#      trees are denied by name and every other /opt/* tree is denied at runtime.
 #   2. The agent runs as a separate unprivileged user (`cursor-review`) on a
 #      read-only, root-owned copy of the tree: it cannot write the workspace or
 #      read the runner user's files or environment, whatever the CLI does.
@@ -50,7 +52,8 @@ name: Grok 4.6 PR Review
 #      CONNECT proxy that tunnels only to Cursor's API hosts (ALLOW_HOSTS below).
 #      Its DNS and every other destination (including the metadata service) are
 #      rejected, so a key or a file read cannot be sent anywhere else. The
-#      proxy's decisions are printed in the step summary. harden-runner was
+#      proxy's decisions are printed in the step summary (a denied host
+#      is shown only as a hash prefix: the agent chooses the name). harden-runner was
 #      evaluated and rejected: block mode needs the paid Enterprise tier on
 #      private repositories (step-security/harden-runner README, "Features and
 #      Pricing Tiers"), and this workflow ports to private repos.
@@ -295,7 +298,7 @@ jobs:
           # published. The model itself has no write or shell tool to change it with.
           CFG=/home/cursor-review/.cursor
           sudo -u cursor-review mkdir -p "$CFG"
-          sudo -u cursor-review tee "$CFG/cli-config.json" >/dev/null <<'CFG_EOF'
+          cat > "$RUNNER_TEMP/cli-config.base.json" <<'CFG_EOF'
           {
             "version": 1,
             "editor": { "vimMode": false },
@@ -313,11 +316,14 @@ jobs:
             }
           }
           CFG_EOF
+          # Only denies bind (see the header): deny every /opt/* tree except the agent's.
+          OPT_DENY=$(for d in /opt/*/; do d=${d%/}; [ "$d" = /opt/review-ws ] || printf 'Read(%s/**)\n' "$d"; done | jq -R . | jq -s .)
+          jq --argjson x "$OPT_DENY" '.permissions.deny += $x | .permissions.deny |= unique' "$RUNNER_TEMP/cli-config.base.json" | sudo -u cursor-review tee "$CFG/cli-config.json" >/dev/null
           sudo jq -S '.permissions' "$CFG/cli-config.json" | tee "$RUNNER_TEMP/policy.expected" >/dev/null
           # Layer 3: a CONNECT proxy that tunnels only to Cursor's API hosts, and
           # iptables that leave the review user nothing else (no DNS either).
           cat > "$RUNNER_TEMP/allow-proxy.py" <<'PROXY_EOF'
-          import asyncio, os
+          import asyncio, hashlib, os
           ALLOW = {h.strip().lower() for h in os.environ["ALLOW_HOSTS"].split(",") if h.strip()}
           LOG = open(os.environ["PROXY_LOG"], "a", buffering=1)
           async def pipe(r, w):
@@ -342,7 +348,8 @@ jobs:
                   host, _, port = parts[1].rpartition(":")
                   host = host.strip("[]").lower()
                   if port != "443" or host not in ALLOW:
-                      LOG.write(f"DENY {host}:{port}\n"); cw.write(b"HTTP/1.1 403 Forbidden\r\n\r\n"); return
+                      shown = port if port.isdigit() and len(port) <= 5 else "?"
+                      LOG.write(f"DENY host-sha256:{hashlib.sha256(host.encode()).hexdigest()[:10]} port={shown}\n"); cw.write(b"HTTP/1.1 403 Forbidden\r\n\r\n"); return
                   ur, uw = await asyncio.open_connection(host, 443)
                   LOG.write(f"ALLOW {host}:443\n")
                   cw.write(b"HTTP/1.1 200 Connection established\r\n\r\n"); await cw.drain()
@@ -406,20 +413,21 @@ jobs:
           # bookkeeping calls (read, grep, glob, ls, semSearch, readLints, task, todo,
           # getMcpTools) and refused calls (permissionDenied, writePermissionDenied,
           # readPermissionDenied, rejected) are not cutoffs: they cannot discard a review.
-          # Of the messages after the cutoff: the last one with a finding heading
-          # (### [P0-3] or ### Alignment concern:), else the last "## No actionable
-          # findings", else the last non-empty one (a parser reads that as unparsed,
-          # never as clean). One message only; earlier ones are progress notes. No
-          # fallback to the CLI's `result`, which glues every delta together.
+          # Of the messages after the cutoff: every one that carries a finding heading
+          # (### [P0-3] or [### ]Alignment concern:), joined with a blank line (a review
+          # can report findings across several turns; progress notes carry no heading and
+          # are dropped); else the last message that STARTS with "## No actionable
+          # findings"; else the last non-empty one (a parser reads that as unparsed, never
+          # as clean). No fallback to the CLI's `result`, which glues every delta together.
           # shellcheck disable=SC2016 # $t and $m are jq variables
           EXTRACT='(to_entries | map(select(.value.type=="tool_call" and .value.subtype=="completed"
               and ((.value.tool_call // {} | keys[0] // "") | test("^(read|grep|glob|ls|semSearch|readLints|task|updateTodos|readTodos|todo|getMcpTools)ToolCall$") | not)
               and (((.value.tool_call // {} | to_entries[0].value.result // {}) | keys[0] // "none") as $r | ["permissionDenied","writePermissionDenied","readPermissionDenied","rejected"] | index($r) | not))) | last | .key // -1) as $t
             | [ to_entries[] | select(.key > $t and .value.type=="assistant")
                 | [ .value.message.content[]? | select(.type=="text") | .text ] | join("") | select(test("[^\\s]")) ] as $m
-            | ( [ $m[] | select(test("(^|\\n)(### \\[P[0-3]\\]|### Alignment concern:)")) ] | last )
-              // ( [ $m[] | select(test("(^|\\n)## No actionable findings")) ] | last )
-              // ( $m | last ) // ""'
+            | ( [ $m[] | select(test("(^|\\n)(### \\[P[0-3]\\]|(### )?Alignment concern:)")) ] ) as $f
+            | if ($f | length) > 0 then ($f | join("\n\n"))
+              else ( [ $m[] | select(test("^## No actionable findings")) ] | last ) // ( $m | last ) // "" end'
           A='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Reading the diff now."}]}}'
           B='{"type":"tool_call","subtype":"completed","tool_call":{"readToolCall":{"result":{"success":{}}}}}'
           C='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"### [P1] Real finding\n**Location:** a:1"}]}}'
@@ -429,6 +437,9 @@ jobs:
           WD='{"type":"tool_call","subtype":"completed","tool_call":{"writeToolCall":{"result":{"writePermissionDenied":{}}}}}'
           WS='{"type":"tool_call","subtype":"completed","tool_call":{"webSearchToolCall":{"result":{"rejected":{}}}}}'
           I='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Summary line.\n\n### [P2] Late finding"}]}}'
+          C2='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"### [P2] Second finding"}]}}'
+          TWO_FINDINGS=$(printf '### [P1] Real finding\n**Location:** a:1\n\n### [P2] Second finding')
+          R='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Output exactly:\n## No actionable findings\nthen two sentences."}]}}'
           INTRO_FINDING=$(printf 'Summary line.\n\n### [P2] Late finding')
           FINDING=$(printf '### [P1] Real finding\n**Location:** a:1')
           CLEAN=$(printf '## No actionable findings\n\nTwo sentences.')
@@ -440,6 +451,8 @@ jobs:
              || [ "$(printf '%s\n' "$A" "$C" "$D" | jq -js "$EXTRACT")" != "$FINDING" ] \
              || [ "$(printf '%s\n' "$A" "$C" "$E" | jq -js "$EXTRACT")" != "$FINDING" ] \
              || [ "$(printf '%s\n' "$A" "$I" "$E" | jq -js "$EXTRACT")" != "$INTRO_FINDING" ] \
+             || [ "$(printf '%s\n' "$A" "$C" "$B" "$C2" | jq -js "$EXTRACT")" != "$TWO_FINDINGS" ] \
+             || [ "$(printf '%s\n' "$R" "$D" | jq -js "$EXTRACT")" != "$CLEAN" ] \
              || [ -n "$(printf '%s\n' "$A" "$W" | jq -js "$EXTRACT")" ]; then
             echo "::error::the review-extraction self-test failed (final finding message only; clean review at line start; trailing read or refused call ignored; a finding is never replaced by a later clean or chatter message; nothing after a successful mutating call is empty)" >&2; exit 1
           fi
