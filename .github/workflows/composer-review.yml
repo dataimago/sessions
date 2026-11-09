@@ -69,8 +69,10 @@ name: Grok 4.6 PR Review
 # key, built from the key with CR/LF stripped (a trailing newline would add an
 # empty pattern that matches every line). One file, composer-review.md, crosses
 # to the comment job.
-# The step also audits the CLI's tool-call stream and fails the review if any
-# Shell/Write/Delete/Fetch/MCP call succeeded.
+# The step also audits the CLI's tool-call stream, fail-closed: it fails the
+# review if any tool call outside the read-only set (read, grep, glob, ls, task,
+# todo, ...) came back as anything but a denial. A tool name not seen before
+# fails the review until it is looked at and added, as updateTodos was.
 #
 # A review job that FAILS replaces the marked comment with "did not complete
 # for <sha>", so an old "Reviewed" heading never stands for a newer commit.
@@ -380,11 +382,12 @@ jobs:
           # Positive control: an allowed host must connect through the proxy (a typo in the
           # allowlist, or a proxy that denies everything, would otherwise look like a lock
           # that works and every review would die at the API).
-          PROBE_HOST=${CURSOR_ALLOWED_HOSTS%%,*}
-          if [ -z "$PROBE_HOST" ]; then echo "::error::CURSOR_ALLOWED_HOSTS is empty" >&2; exit 1; fi
-          if ! sudo -u cursor-review curl -sS --retry 2 --max-time 20 -o /dev/null -x http://127.0.0.1:3128 "https://${PROBE_HOST}" 2>/dev/null; then
-            echo "::error::the review user cannot reach ${PROBE_HOST} through the proxy" >&2; exit 1
-          fi
+          if [ -z "$CURSOR_ALLOWED_HOSTS" ]; then echo "::error::CURSOR_ALLOWED_HOSTS is empty" >&2; exit 1; fi
+          for PROBE_HOST in $(echo "$CURSOR_ALLOWED_HOSTS" | tr ',' ' '); do
+            if ! sudo -u cursor-review curl -sS --retry 2 --max-time 20 -o /dev/null -x http://127.0.0.1:3128 "https://${PROBE_HOST}" 2>/dev/null; then
+              echo "::error::the review user cannot reach ${PROBE_HOST} through the proxy" >&2; exit 1
+            fi
+          done
           # Negative control for the tool-call audit (a check that cannot go red proves
           # nothing): a successful Shell must be reported, a successful Read and a denied
           # Shell must not. Runs before the agent, so a broken filter fails fast.
@@ -398,28 +401,47 @@ jobs:
              || [ -n "$(printf '%s\n' "$AUDIT_SHELL_DENIED" | jq -r "$AUDIT")" ]; then
             echo "::error::the tool-call audit self-test failed (it must flag a successful Shell and pass a Read and a denied Shell)" >&2; exit 1
           fi
-          # The posted review is the LAST assistant message after the last tool call that
-          # can change something. Read-only and bookkeeping calls (read, grep, glob, ls,
-          # semSearch, readLints, task, todo, getMcpTools) are not cutoffs: a trailing one
-          # must not discard the review. Earlier messages are progress notes.
-          # shellcheck disable=SC2016 # $t is a jq variable
-          EXTRACT='(to_entries | map(select(.value.type=="tool_call" and ((.value.tool_call // {} | keys[0] // "") | test("^(read|grep|glob|ls|semSearch|readLints|task|updateTodos|readTodos|todo|getMcpTools)ToolCall$") | not))) | last | .key // -1) as $t
+          # The posted review comes from the assistant messages after the last tool call
+          # that changed or tried to change something and was NOT refused. Read-only and
+          # bookkeeping calls (read, grep, glob, ls, semSearch, readLints, task, todo,
+          # getMcpTools) and refused calls (permissionDenied, writePermissionDenied,
+          # readPermissionDenied, rejected) are not cutoffs: they cannot discard a review.
+          # Of the messages after the cutoff: the last one with a finding heading
+          # (### [P0-3] or ### Alignment concern:), else the last "## No actionable
+          # findings", else the last non-empty one (a parser reads that as unparsed,
+          # never as clean). One message only; earlier ones are progress notes. No
+          # fallback to the CLI's `result`, which glues every delta together.
+          # shellcheck disable=SC2016 # $t and $m are jq variables
+          EXTRACT='(to_entries | map(select(.value.type=="tool_call" and .value.subtype=="completed"
+              and ((.value.tool_call // {} | keys[0] // "") | test("^(read|grep|glob|ls|semSearch|readLints|task|updateTodos|readTodos|todo|getMcpTools)ToolCall$") | not)
+              and (((.value.tool_call // {} | to_entries[0].value.result // {}) | keys[0] // "none") as $r | ["permissionDenied","writePermissionDenied","readPermissionDenied","rejected"] | index($r) | not))) | last | .key // -1) as $t
             | [ to_entries[] | select(.key > $t and .value.type=="assistant")
-                | [ .value.message.content[]? | select(.type=="text") | .text ] | join("") | select(test("[^\\s]")) ] | last // ""'
+                | [ .value.message.content[]? | select(.type=="text") | .text ] | join("") | select(test("[^\\s]")) ] as $m
+            | ( [ $m[] | select(test("(^|\\n)(### \\[P[0-3]\\]|### Alignment concern:)")) ] | last )
+              // ( [ $m[] | select(test("(^|\\n)## No actionable findings")) ] | last )
+              // ( $m | last ) // ""'
           A='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Reading the diff now."}]}}'
           B='{"type":"tool_call","subtype":"completed","tool_call":{"readToolCall":{"result":{"success":{}}}}}'
           C='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"### [P1] Real finding\n**Location:** a:1"}]}}'
           D='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"## No actionable findings\n\nTwo sentences."}]}}'
-          W='{"type":"tool_call","subtype":"completed","tool_call":{"writeToolCall":{"result":{"writePermissionDenied":{}}}}}'
-          X_NOTE_FINDING=$(printf '%s\n' "$A" "$B" "$C" | jq -js "$EXTRACT")
-          X_CLEAN=$(printf '%s\n' "$A" "$D" | jq -js "$EXTRACT")
-          X_TRAILING_READ=$(printf '%s\n' "$A" "$C" "$B" | jq -js "$EXTRACT")
-          X_NOTHING_AFTER=$(printf '%s\n' "$A" "$W" | jq -js "$EXTRACT")
-          if [ "$X_NOTE_FINDING" != "$(printf '### [P1] Real finding\n**Location:** a:1')" ] \
-             || [ "$X_CLEAN" != "$(printf '## No actionable findings\n\nTwo sentences.')" ] \
-             || [ "$X_TRAILING_READ" != "$(printf '### [P1] Real finding\n**Location:** a:1')" ] \
-             || [ -n "$X_NOTHING_AFTER" ]; then
-            echo "::error::the review-extraction self-test failed (final message only; clean review at line start; trailing read ignored; nothing after the cutoff is empty)" >&2; exit 1
+          E='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]}}'
+          W='{"type":"tool_call","subtype":"completed","tool_call":{"shellToolCall":{"result":{"success":{}}}}}'
+          WD='{"type":"tool_call","subtype":"completed","tool_call":{"writeToolCall":{"result":{"writePermissionDenied":{}}}}}'
+          WS='{"type":"tool_call","subtype":"completed","tool_call":{"webSearchToolCall":{"result":{"rejected":{}}}}}'
+          I='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Summary line.\n\n### [P2] Late finding"}]}}'
+          INTRO_FINDING=$(printf 'Summary line.\n\n### [P2] Late finding')
+          FINDING=$(printf '### [P1] Real finding\n**Location:** a:1')
+          CLEAN=$(printf '## No actionable findings\n\nTwo sentences.')
+          if [ "$(printf '%s\n' "$A" "$B" "$C" | jq -js "$EXTRACT")" != "$FINDING" ] \
+             || [ "$(printf '%s\n' "$A" "$D" | jq -js "$EXTRACT")" != "$CLEAN" ] \
+             || [ "$(printf '%s\n' "$A" "$C" "$B" | jq -js "$EXTRACT")" != "$FINDING" ] \
+             || [ "$(printf '%s\n' "$A" "$C" "$WD" | jq -js "$EXTRACT")" != "$FINDING" ] \
+             || [ "$(printf '%s\n' "$A" "$C" "$WS" | jq -js "$EXTRACT")" != "$FINDING" ] \
+             || [ "$(printf '%s\n' "$A" "$C" "$D" | jq -js "$EXTRACT")" != "$FINDING" ] \
+             || [ "$(printf '%s\n' "$A" "$C" "$E" | jq -js "$EXTRACT")" != "$FINDING" ] \
+             || [ "$(printf '%s\n' "$A" "$I" "$E" | jq -js "$EXTRACT")" != "$INTRO_FINDING" ] \
+             || [ -n "$(printf '%s\n' "$A" "$W" | jq -js "$EXTRACT")" ]; then
+            echo "::error::the review-extraction self-test failed (final finding message only; clean review at line start; trailing read or refused call ignored; a finding is never replaced by a later clean or chatter message; nothing after a successful mutating call is empty)" >&2; exit 1
           fi
           # ---- Run the reviewer. --trust only skips the interactive trust prompt.
           # The key reaches the CLI as the review user's environment only.
@@ -438,7 +460,9 @@ jobs:
           # stream carry its words. The pattern file is the key with CR/LF
           # stripped (a trailing newline would otherwise add an empty pattern that
           # matches every line); the key itself is never printed.
-          printf '%s' "$CURSOR_API_KEY" | tr -d '\r\n' > "$RUNNER_TEMP/key.pat"
+          # Private (umask 077) and removed on every exit path of this step.
+          trap 'rm -f "$RUNNER_TEMP/key.pat"' EXIT
+          ( umask 077; printf '%s' "$CURSOR_API_KEY" | tr -d '\r\n' > "$RUNNER_TEMP/key.pat" )
           if [ ! -s "$RUNNER_TEMP/key.pat" ]; then echo "::error::CURSOR_API_KEY is empty; refusing to run the leak guard on nothing" >&2; exit 1; fi
           # The review is the assistant text after the last tool call. The result
           # event's `result` is the concatenation of every text delta (Cursor CLI
