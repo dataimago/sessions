@@ -40,7 +40,9 @@ name: Grok 4.6 PR Review
 #      anything not allowed is refused (WebFetch and WebSearch came back
 #      "rejected", a Task subagent's Shell "permissionDenied"). Reads outside
 #      the workspace (/etc, /home, /tmp, /proc, ...) are denied too, because
-#      `Read(**)` alone let Glob list /home/runner.
+#      `Read(**)` alone let Glob list /home/runner. Narrowing the allow to
+#      /opt/review-ws did not restrict Glob (canary 2026-11-09: /opt/hostedtoolcache
+#      and /usr/lib still listed), so the other system trees are denied by name.
 #   2. The agent runs as a separate unprivileged user (`cursor-review`) on a
 #      read-only, root-owned copy of the tree: it cannot write the workspace or
 #      read the runner user's files or environment, whatever the CLI does.
@@ -302,7 +304,9 @@ jobs:
                 "Shell(*)", "Write(**)", "WebFetch(*)", "Mcp(*:*)",
                 "Read(**/.env*)", "Read(**/*.pem)", "Read(**/*.key)",
                 "Read(/proc/**)", "Read(/etc/**)", "Read(/home/**)", "Read(/tmp/**)", "Read(/root/**)",
-                "Read(/var/**)", "Read(/run/**)", "Read(/sys/**)", "Read(/opt/cursor-agent/**)"
+                "Read(/var/**)", "Read(/run/**)", "Read(/sys/**)", "Read(/opt/cursor-agent/**)",
+                "Read(/opt/hostedtoolcache/**)", "Read(/usr/**)", "Read(/dev/**)", "Read(/bin/**)", "Read(/sbin/**)", "Read(/lib/**)",
+                "Read(/lib64/**)", "Read(/boot/**)", "Read(/mnt/**)", "Read(/srv/**)", "Read(/snap/**)"
               ]
             }
           }
@@ -394,6 +398,29 @@ jobs:
              || [ -n "$(printf '%s\n' "$AUDIT_SHELL_DENIED" | jq -r "$AUDIT")" ]; then
             echo "::error::the tool-call audit self-test failed (it must flag a successful Shell and pass a Read and a denied Shell)" >&2; exit 1
           fi
+          # The posted review is the LAST assistant message after the last tool call that
+          # can change something. Read-only and bookkeeping calls (read, grep, glob, ls,
+          # semSearch, readLints, task, todo, getMcpTools) are not cutoffs: a trailing one
+          # must not discard the review. Earlier messages are progress notes.
+          # shellcheck disable=SC2016 # $t is a jq variable
+          EXTRACT='(to_entries | map(select(.value.type=="tool_call" and ((.value.tool_call // {} | keys[0] // "") | test("^(read|grep|glob|ls|semSearch|readLints|task|updateTodos|readTodos|todo|getMcpTools)ToolCall$") | not))) | last | .key // -1) as $t
+            | [ to_entries[] | select(.key > $t and .value.type=="assistant")
+                | [ .value.message.content[]? | select(.type=="text") | .text ] | join("") | select(test("[^\\s]")) ] | last // ""'
+          A='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Reading the diff now."}]}}'
+          B='{"type":"tool_call","subtype":"completed","tool_call":{"readToolCall":{"result":{"success":{}}}}}'
+          C='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"### [P1] Real finding\n**Location:** a:1"}]}}'
+          D='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"## No actionable findings\n\nTwo sentences."}]}}'
+          W='{"type":"tool_call","subtype":"completed","tool_call":{"writeToolCall":{"result":{"writePermissionDenied":{}}}}}'
+          X_NOTE_FINDING=$(printf '%s\n' "$A" "$B" "$C" | jq -js "$EXTRACT")
+          X_CLEAN=$(printf '%s\n' "$A" "$D" | jq -js "$EXTRACT")
+          X_TRAILING_READ=$(printf '%s\n' "$A" "$C" "$B" | jq -js "$EXTRACT")
+          X_NOTHING_AFTER=$(printf '%s\n' "$A" "$W" | jq -js "$EXTRACT")
+          if [ "$X_NOTE_FINDING" != "$(printf '### [P1] Real finding\n**Location:** a:1')" ] \
+             || [ "$X_CLEAN" != "$(printf '## No actionable findings\n\nTwo sentences.')" ] \
+             || [ "$X_TRAILING_READ" != "$(printf '### [P1] Real finding\n**Location:** a:1')" ] \
+             || [ -n "$X_NOTHING_AFTER" ]; then
+            echo "::error::the review-extraction self-test failed (final message only; clean review at line start; trailing read ignored; nothing after the cutoff is empty)" >&2; exit 1
+          fi
           # ---- Run the reviewer. --trust only skips the interactive trust prompt.
           # The key reaches the CLI as the review user's environment only.
           export HTTPS_PROXY=http://127.0.0.1:3128 HTTP_PROXY=http://127.0.0.1:3128 NODE_USE_ENV_PROXY=1 CURSOR_CONFIG_DIR="$CFG"
@@ -419,16 +446,12 @@ jobs:
           # review with no separator, and "## No actionable findings" / "### [P1]"
           # stop starting a line: lain's parseReview then reads a clean review as
           # unparsed. `result` is the fallback only when no such text exists.
-          # Todo-list and schema-loading calls (updateTodos, readTodos, getMcpTools) are not a cutoff:
-          # one after the review text would otherwise leave nothing "after the last tool call".
-          jq -js '(to_entries | map(select(.value.type=="tool_call" and ((.value.tool_call // {} | keys[0] // "") | test("^(updateTodos|readTodos|todo|getMcpTools)ToolCall$") | not))) | last | .key // -1) as $t
-            | [ to_entries[] | select(.key > $t and .value.type=="assistant")
-                | .value.message.content[]? | select(.type=="text") | .text ] | join("\n\n")' \
-            review-events.jsonl > composer-review.md 2>/dev/null || : > composer-review.md
-          # -j: no trailing newline. Whitespace-only output counts as none.
-          if ! grep -q '[^[:space:]]' composer-review.md 2>/dev/null; then
-            jq -js '[.[]|select(.type=="result")]|last|.result // ""' review-events.jsonl > composer-review.md 2>/dev/null || : > composer-review.md
-          fi
+          # $EXTRACT is defined (and tested on fixtures) before the run. There is no
+          # fallback to the CLI's `result`: it glues every text delta together, so
+          # headings stop starting a line. No usable message means no review: the
+          # empty-output check below fails the step and the comment job posts
+          # "did not complete".
+          jq -js "$EXTRACT" review-events.jsonl > composer-review.md 2>/dev/null || : > composer-review.md
           grep -q '[^[:space:]]' composer-review.md 2>/dev/null || : > composer-review.md
           # Scan with CR and LF removed from each file as well as the pattern, so a key
           # split across lines (a wrapped log line, or a review told to break it up)
@@ -449,7 +472,7 @@ jobs:
             echo "::error::agent output contained CURSOR_API_KEY; everything was discarded and nothing was published. Rotate the key." >&2
             exit 1
           fi
-          [ "${STATUS:-}" = failed ] && { echo "::error::cursor-agent failed" >&2; tail -n 20 review-stderr.log >&2 || true; }
+          [ "${STATUS:-}" = failed ] && { echo "::error::cursor-agent failed" >&2; tail -n 20 review-stderr.log | sed 's/^/    /' >&2 || true; }
           # ---- Evidence: proxy decisions and tool calls, always shown.
           {
             echo "### Network (proxy log)"; sort proxy.log | uniq -c | sed 's/^/    /'
@@ -536,8 +559,11 @@ jobs:
           # Stale writer guard: a run that finished its review but was superseded
           # must not overwrite the comment of a newer commit (cancellation only
           # reaches jobs still running).
-          CURRENT=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.sha)
-          if [ "$CURRENT" != "$HEAD_SHA" ]; then
+          # Only a successful read that differs counts as "superseded"; if the probe itself
+          # fails, post anyway rather than leave an older heading in place.
+          CURRENT=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.sha || true)
+          if [ -z "$CURRENT" ]; then echo "::warning::could not read the PR head; posting without the stale-writer check"; fi
+          if [ -n "$CURRENT" ] && [ "$CURRENT" != "$HEAD_SHA" ]; then
             echo "PR head is ${CURRENT:0:8}, not ${HEAD_SHA:0:8}; a newer run owns the comment. Not writing."
             exit 0
           fi
