@@ -137,7 +137,7 @@ jobs:
 
       # A step that hangs must FAIL (the comment job then posts "did not
       # complete"), not run into the job limit, which ends the job "cancelled".
-      # The step limits (5 + 3 + 50 + 2 for the upload = 60 minutes) leave 10
+      # The step limits (5 + 6 + 50 + 2 for the upload = 63 minutes) leave 7
       # minutes under the 70-minute job limit for the gate step and post actions.
       # The review step's 50 covers setup, the 40-minute agent, its 60-second
       # kill grace and the post-run checks.
@@ -152,11 +152,11 @@ jobs:
 
       - name: Install pinned Cursor CLI (version + sha256)
         if: steps.gate.outputs.enabled == 'true'
-        timeout-minutes: 3
+        timeout-minutes: 6
         run: |
           set -euo pipefail
           URL="https://downloads.cursor.com/lab/${CURSOR_CLI_VERSION}/linux/x64/agent-cli-package.tar.gz"
-          curl -fsSL --retry 3 --max-time 120 -o "$RUNNER_TEMP/cursor-cli.tar.gz" "$URL"
+          curl -fsSL --retry 2 --max-time 100 -o "$RUNNER_TEMP/cursor-cli.tar.gz" "$URL"
           echo "${CURSOR_CLI_SHA256}  $RUNNER_TEMP/cursor-cli.tar.gz" | sha256sum -c -
           # Root-owned, so the review user cannot alter or self-update it.
           sudo mkdir -p /opt/cursor-agent
@@ -417,8 +417,10 @@ jobs:
           # (### [P0-3] or [### ]Alignment concern:), joined with a blank line (a review
           # can report findings across several turns; progress notes carry no heading and
           # are dropped); else the last message that STARTS with "## No actionable
-          # findings"; else the last non-empty one (a parser reads that as unparsed, never
-          # as clean). No fallback to the CLI's `result`, which glues every delta together.
+          # findings"; else the last non-empty one that does NOT contain that heading mid-text
+          # (a quoted copy of the prompt would read as clean); with none, the output is
+          # empty and the step fails. A parser reads the last-resort message as unparsed, never
+          # as clean. No fallback to the CLI's `result`, which glues every delta together.
           # shellcheck disable=SC2016 # $t and $m are jq variables
           EXTRACT='(to_entries | map(select(.value.type=="tool_call" and .value.subtype=="completed"
               and ((.value.tool_call // {} | keys[0] // "") | test("^(read|grep|glob|ls|semSearch|readLints|task|updateTodos|readTodos|todo|getMcpTools)ToolCall$") | not)
@@ -427,7 +429,8 @@ jobs:
                 | [ .value.message.content[]? | select(.type=="text") | .text ] | join("") | select(test("[^\\s]")) ] as $m
             | ( [ $m[] | select(test("(^|\\n)(### \\[P[0-3]\\]|(### )?Alignment concern:)")) ] ) as $f
             | if ($f | length) > 0 then ($f | join("\n\n"))
-              else ( [ $m[] | select(test("^## No actionable findings")) ] | last ) // ( $m | last ) // "" end'
+              else ( [ $m[] | select(test("^## No actionable findings")) ] | last )
+                   // ( [ $m[] | select(test("(^|\\n)## No actionable findings") | not) ] | last ) // "" end'
           A='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Reading the diff now."}]}}'
           B='{"type":"tool_call","subtype":"completed","tool_call":{"readToolCall":{"result":{"success":{}}}}}'
           C='{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"### [P1] Real finding\n**Location:** a:1"}]}}'
@@ -453,6 +456,8 @@ jobs:
              || [ "$(printf '%s\n' "$A" "$I" "$E" | jq -js "$EXTRACT")" != "$INTRO_FINDING" ] \
              || [ "$(printf '%s\n' "$A" "$C" "$B" "$C2" | jq -js "$EXTRACT")" != "$TWO_FINDINGS" ] \
              || [ "$(printf '%s\n' "$R" "$D" | jq -js "$EXTRACT")" != "$CLEAN" ] \
+             || [ -n "$(printf '%s\n' "$R" | jq -js "$EXTRACT")" ] \
+             || [ "$(printf '%s\n' "$A" "$E" | jq -js "$EXTRACT")" != "Done." ] \
              || [ -n "$(printf '%s\n' "$A" "$W" | jq -js "$EXTRACT")" ]; then
             echo "::error::the review-extraction self-test failed (final finding message only; clean review at line start; trailing read or refused call ignored; a finding is never replaced by a later clean or chatter message; nothing after a successful mutating call is empty)" >&2; exit 1
           fi
@@ -467,15 +472,19 @@ jobs:
                 RC=$?; STATUS=failed
                 if [ "$RC" -eq 124 ] || [ "$RC" -eq 137 ]; then echo "::error::the review did not finish within 40 minutes" >&2; fi
               }
+          # `timeout` runs as the runner user and cannot SIGKILL a process of another uid
+          # (sudo only relays SIGTERM), so make sure nothing of the review user survives
+          # before any output file is read.
+          sudo pkill -KILL -u cursor-review 2>/dev/null || true
           # ---- Key-leak guard over EVERY file this step later prints, appends to
           # the step summary or hands to another job (not just the review text):
           # the proxy log carries host names the agent chose, stderr and the event
-          # stream carry its words. The pattern file is the key with CR/LF
+          # stream carry its words. The pattern file is the key with all whitespace
           # stripped (a trailing newline would otherwise add an empty pattern that
           # matches every line); the key itself is never printed.
           # Private (umask 077) and removed on every exit path of this step.
           trap 'rm -f "$RUNNER_TEMP/key.pat"' EXIT
-          ( umask 077; printf '%s' "$CURSOR_API_KEY" | tr -d '\r\n' > "$RUNNER_TEMP/key.pat" )
+          ( umask 077; printf '%s' "$CURSOR_API_KEY" | tr -d '[:space:]' > "$RUNNER_TEMP/key.pat" )
           if [ ! -s "$RUNNER_TEMP/key.pat" ]; then echo "::error::CURSOR_API_KEY is empty; refusing to run the leak guard on nothing" >&2; exit 1; fi
           # The review is the assistant text after the last tool call. The result
           # event's `result` is the concatenation of every text delta (Cursor CLI
@@ -502,7 +511,7 @@ jobs:
           LEAK=
           for f in composer-review.md proxy.log review-stderr.log review-events.jsonl; do
             [ -f "$f" ] || continue
-            if tr -d '\r\n' < "$f" | grep -qF -f "$RUNNER_TEMP/key.pat"; then LEAK=1; fi
+            if tr -d '[:space:]' < "$f" | grep -qF -f "$RUNNER_TEMP/key.pat"; then LEAK=1; fi
           done
           if [ -n "$LEAK" ]; then
             : > composer-review.md; : > proxy.log; : > review-stderr.log; : > review-events.jsonl
@@ -516,7 +525,7 @@ jobs:
             echo "### Tool calls (started)"; jq -r 'select(.type=="tool_call" and .subtype=="started") | .tool_call | to_entries[0] | "\(.key) \(.value.args // {} | tostring | .[0:110])"' review-events.jsonl 2>/dev/null | sed 's/^/    /'
             echo "### Tool call outcomes"; jq -r 'select(.type=="tool_call" and .subtype=="completed") | .tool_call | to_entries[0] | "\(.key) -> \(.value.result // {} | keys[0] // "none")"' review-events.jsonl 2>/dev/null | sort | uniq -c | sed 's/^/    /'
           } | tee -a "$GITHUB_STEP_SUMMARY" || true
-          if [ "${STATUS:-}" = failed ]; then exit 1; fi
+          if [ "${STATUS:-}" = failed ]; then : > composer-review.md; exit 1; fi
           # Fail-closed audit: any tool call that is not a known read-only kind
           # and did not come back as a known denial means the permission layer failed. Observed with the
           # pinned CLI (canary, 2026-11-08): Shell -> permissionDenied, Write/Edit
@@ -525,9 +534,9 @@ jobs:
           # refused). getMcpTools only loads tool schemas; a Task subagent runs
           # under the same permissions (its Shell was denied).
           BAD=$(jq -r "$AUDIT" review-events.jsonl | sort -u)
-          if [ -n "$BAD" ]; then echo "::error::a non-read tool call succeeded: $BAD" >&2; exit 1; fi
+          if [ -n "$BAD" ]; then : > composer-review.md; echo "::error::a non-read tool call succeeded: $BAD" >&2; exit 1; fi
           if [ "$(jq -s '[.[]|select(.type=="result")]|last|.is_error' review-events.jsonl)" != "false" ]; then
-            echo "::error::the agent's terminal result is missing or an error" >&2; exit 1
+            : > composer-review.md; echo "::error::the agent's terminal result is missing or an error" >&2; exit 1
           fi
           # Only a non-empty regular file goes on: an empty run fails here, so
           # nothing is uploaded and "Re-run all jobs" starts clean.
