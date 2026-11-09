@@ -133,7 +133,7 @@ jobs:
     # runs, so a stale "Reviewed" comment would stand; the inner limit turns a slow
     # review into an ordinary failure, which posts "did not complete". Each step
     # below has its own limit, so a hang fails there; the sum stays under this one.
-    timeout-minutes: 70
+    timeout-minutes: 75
     permissions:
       contents: read
     outputs:
@@ -147,9 +147,9 @@ jobs:
 
       # A step that hangs must FAIL (the comment job then posts "did not
       # complete"), not run into the job limit, which ends the job "cancelled".
-      # The step limits (5 + 6 + 50 + 2 for the upload = 63 minutes) leave 7
-      # minutes under the 70-minute job limit for the gate step and post actions.
-      # The review step's 50 covers setup, the 40-minute agent, its 60-second
+      # The step limits (5 + 6 + 55 + 2 for the upload = 68 minutes) leave 7
+      # minutes under the 75-minute job limit for the gate step and post actions.
+      # The review step's 55 covers setup, the 40-minute agent, its 60-second
       # kill grace and the post-run checks.
       - name: Checkout PR head (no credentials persist)
         if: steps.gate.outputs.enabled == 'true'
@@ -183,7 +183,7 @@ jobs:
 
       - name: Review diff with Grok 4.6 (no GitHub credentials)
         if: steps.gate.outputs.enabled == 'true'
-        timeout-minutes: 50
+        timeout-minutes: 55
         env:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
           # GitHub never puts GITHUB_TOKEN in a step's environment unless the
@@ -537,6 +537,34 @@ jobs:
                    f_glued_finding_outside f_mixed_block f_mixed_spaced f_no_verdict f_no_block f_unclosed \
                    f_wrong_nonce f_close_first f_mixed_crlf f_empty; do xcheck "" "$f"; done
           if [ "$xfail" -ne 0 ]; then echo "::error::the review-extraction self-test failed ($xfail fixtures)" >&2; exit 1; fi
+          # The leak scan patterns for a key, one per line: the key, its hex in both letter
+          # cases, and the stable middle of its base64 at each of the three alignments (the
+          # first and last groups depend on what surrounds the key and are dropped).
+          leak_patterns() {
+            local k="$1" pad b64 mid hex
+            printf '%s\n' "$k"
+            hex=$(printf '%s' "$k" | od -An -tx1 | tr -d ' \n')
+            printf '%s\n' "$hex"
+            printf '%s\n' "$hex" | tr 'a-f' 'A-F'
+            for pad in 0 1 2; do
+              b64=$( { printf '%.*s' "$pad" xx; printf '%s' "$k"; } | base64 | tr -d '\n' )
+              mid=${b64:4:$(( ${#b64} - 8 ))}
+              if [ "${#mid}" -ge 8 ]; then printf '%s\n' "$mid"; fi
+            done
+          }
+          # Self-test with a fake key: raw, lower and upper hex and base64 at three alignments
+          # must hit; unrelated text must not.
+          LK=lkTESTKEY0123456789abcdefXYZ
+          ( umask 077; leak_patterns "$LK" > "$RUNNER_TEMP/lk.pat" )
+          lkhit() { tr -d '[:space:]' | grep -qF -f "$RUNNER_TEMP/lk.pat"; }
+          lkfail=0
+          printf 'x %s y' "$LK" | lkhit || lkfail=1
+          printf '%s' "$LK" | od -An -tx1 | lkhit || lkfail=1
+          printf '%s' "$LK" | od -An -tx1 | tr 'a-f' 'A-F' | lkhit || lkfail=1
+          for pre in "" q qq; do printf '%s' "${pre}${LK}!tail" | base64 | fold -w 20 | lkhit || lkfail=1; done
+          if printf 'unrelated text' | lkhit; then lkfail=1; fi
+          rm -f "$RUNNER_TEMP/lk.pat"
+          if [ "$lkfail" -ne 0 ]; then echo "::error::the leak-scan self-test failed" >&2; exit 1; fi
           # ---- Run the reviewer. --trust only skips the interactive trust prompt.
           # The key reaches the CLI as the review user's environment only.
           export HTTPS_PROXY=http://127.0.0.1:3128 HTTP_PROXY=http://127.0.0.1:3128 NODE_USE_ENV_PROXY=1 CURSOR_CONFIG_DIR="$CFG"
@@ -560,23 +588,13 @@ jobs:
           # matches every line); the key itself is never printed.
           # Private (umask 077) and removed on every exit path of this step.
           trap 'rm -f "$RUNNER_TEMP/key.pat"' EXIT
-          # One pattern per line: the key, its lowercase hex, and the stable middle of its
+          # One pattern per line (leak_patterns, tested before the agent runs): the key, its hex
+          # in both letter cases, and the stable middle of its
           # base64 at each of the three alignments (the first and last groups depend on
           # what surrounds the key and are dropped).
           KEY=$(printf '%s' "$CURSOR_API_KEY" | tr -d '[:space:]')
           if [ -z "$KEY" ]; then echo "::error::CURSOR_API_KEY is empty; refusing to run the leak guard on nothing" >&2; exit 1; fi
-          (
-            umask 077
-            {
-              printf '%s\n' "$KEY"
-              printf '%s' "$KEY" | od -An -tx1 | tr -d ' \n'; printf '\n'
-              for pad in 0 1 2; do
-                b64=$( { printf '%.*s' "$pad" xx; printf '%s' "$KEY"; } | base64 | tr -d '\n' )
-                mid=${b64:4:$(( ${#b64} - 8 ))}
-                if [ "${#mid}" -ge 8 ]; then printf '%s\n' "$mid"; fi
-              done
-            } > "$RUNNER_TEMP/key.pat"
-          )
+          ( umask 077; leak_patterns "$KEY" > "$RUNNER_TEMP/key.pat" )
           unset KEY
           # The CLI's `result` event is the concatenation of every text delta (Cursor CLI
           # output-format docs), which glues progress notes onto the review and breaks
@@ -607,7 +625,7 @@ jobs:
             echo "::error::agent output contained CURSOR_API_KEY; everything was discarded and nothing was published. Rotate the key." >&2
             exit 1
           fi
-          [ "${STATUS:-}" = failed ] && { echo "::error::cursor-agent failed" >&2; tail -n 20 review-stderr.log | sed 's/^/    /' >&2 || true; }
+          [ "${STATUS:-}" = failed ] && { echo "::error::cursor-agent failed" >&2; tail -n 20 review-stderr.log | tr -d '\r' | sed 's/^/    /' >&2 || true; }
           # ---- Evidence: proxy decisions and tool calls, always shown.
           {
             echo "### Network (proxy log)"; sort proxy.log | uniq -c | sed 's/^/    /'
