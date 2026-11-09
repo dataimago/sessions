@@ -127,8 +127,13 @@ jobs:
           HAS_KEY: ${{ secrets.CURSOR_API_KEY != '' }}
         run: echo "enabled=$HAS_KEY" >> "$GITHUB_OUTPUT"
 
+      # A step that hangs must FAIL (the comment job then posts "did not
+      # complete"), not run into the job limit, which ends the job "cancelled".
+      # The step limits (5 + 3 + 44 + 2 for the upload) stay below the 55-minute
+      # job limit.
       - name: Checkout PR head (no credentials persist)
         if: steps.gate.outputs.enabled == 'true'
+        timeout-minutes: 5
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           ref: ${{ github.event.pull_request.head.sha }}
@@ -137,10 +142,11 @@ jobs:
 
       - name: Install pinned Cursor CLI (version + sha256)
         if: steps.gate.outputs.enabled == 'true'
+        timeout-minutes: 3
         run: |
           set -euo pipefail
           URL="https://downloads.cursor.com/lab/${CURSOR_CLI_VERSION}/linux/x64/agent-cli-package.tar.gz"
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/cursor-cli.tar.gz" "$URL"
+          curl -fsSL --retry 3 --max-time 120 -o "$RUNNER_TEMP/cursor-cli.tar.gz" "$URL"
           echo "${CURSOR_CLI_SHA256}  $RUNNER_TEMP/cursor-cli.tar.gz" | sha256sum -c -
           # Root-owned, so the review user cannot alter or self-update it.
           sudo mkdir -p /opt/cursor-agent
@@ -157,6 +163,7 @@ jobs:
 
       - name: Review diff with Grok 4.6 (no GitHub credentials)
         if: steps.gate.outputs.enabled == 'true'
+        timeout-minutes: 44
         env:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
           # GitHub never puts GITHUB_TOKEN in a step's environment unless the
@@ -264,9 +271,10 @@ jobs:
           tar --exclude=.git -cf - . | sudo tar -xf - -C /opt/review-ws
           # No symlink in the agent tree may lead outside it (a PR can add one).
           sudo find /opt/review-ws -type l ! -exec sh -c 'readlink -f "$1" | grep -q "^/opt/review-ws/"' _ {} \; -delete
-          sudo rm -f /opt/review-ws/pr.diff
-          sudo install -m 0444 -o root -g root "$DIFF_FILE" /opt/review-ws/pr.diff
-          if [ -L /opt/review-ws/pr.diff ] || [ ! -s /opt/review-ws/pr.diff ]; then
+          # -rf: a PR can also commit pr.diff as a directory; install -T treats the target as a file.
+          sudo rm -rf /opt/review-ws/pr.diff
+          sudo install -T -m 0444 -o root -g root "$DIFF_FILE" /opt/review-ws/pr.diff
+          if [ -L /opt/review-ws/pr.diff ] || [ ! -f /opt/review-ws/pr.diff ] || [ ! -s /opt/review-ws/pr.diff ]; then
             echo "::error::the agent tree has no regular, non-empty pr.diff" >&2; exit 1
           fi
           sudo chown -R root:root /opt/review-ws
@@ -445,6 +453,7 @@ jobs:
 
       - name: Hand the review to the comment job (artifact, not a token)
         if: steps.gate.outputs.enabled == 'true'
+        timeout-minutes: 2
         uses: actions/upload-artifact@v4
         with:
           name: composer-review-${{ github.event.pull_request.number }}
