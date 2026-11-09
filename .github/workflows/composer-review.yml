@@ -152,7 +152,7 @@ jobs:
       # The review step's 55 covers setup, the 40-minute agent, its 60-second
       # kill grace and the post-run checks.
       - name: Checkout PR head (no credentials persist)
-        if: steps.gate.outputs.enabled == 'true'
+        if: success() && steps.gate.outputs.enabled == 'true'
         timeout-minutes: 5
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -161,7 +161,7 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned Cursor CLI (version + sha256)
-        if: steps.gate.outputs.enabled == 'true'
+        if: success() && steps.gate.outputs.enabled == 'true'
         timeout-minutes: 6
         run: |
           set -euo pipefail
@@ -182,7 +182,7 @@ jobs:
           case "$GOT" in *"${CURSOR_CLI_VERSION}"*) ;; *) echo "::error::installed version '${GOT}' is not the pinned ${CURSOR_CLI_VERSION}" >&2; exit 1;; esac
 
       - name: Review diff with Grok 4.6 (no GitHub credentials)
-        if: steps.gate.outputs.enabled == 'true'
+        if: success() && steps.gate.outputs.enabled == 'true'
         timeout-minutes: 55
         env:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
@@ -658,7 +658,7 @@ jobs:
           cat composer-review.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Hand the review to the comment job (artifact, not a token)
-        if: steps.gate.outputs.enabled == 'true'
+        if: success() && steps.gate.outputs.enabled == 'true'
         timeout-minutes: 2
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
