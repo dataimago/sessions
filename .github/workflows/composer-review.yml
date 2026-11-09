@@ -210,7 +210,7 @@ jobs:
           # The diff lives outside the PR tree (a PR can commit pr.diff as a
           # symlink) and is copied into the agent's tree by root, below.
           DIFF_FILE="$RUNNER_TEMP/pr.diff"
-          rm -f "$DIFF_FILE" "$DIFF_FILE.trunc" composer-review.md proxy.log review-events.jsonl review-stderr.log
+          rm -rf "$DIFF_FILE" "$DIFF_FILE.trunc" composer-review.md proxy.log review-events.jsonl review-stderr.log
           # Generated files are left out so src/ fits under the cap: the bundles
           # and vectors in content/ are produced by sesh-ai's reviewed bundler
           # and the indexer, and the lockfile by pnpm.
@@ -271,10 +271,11 @@ jobs:
           ## No actionable findings
           followed by two sentences on what you examined. Markdown only.
 
-          When you have finished, write your final review once, as your last
+          When you have finished, write your final review exactly once, as your last
           message: the line <!-- review:${NONCE} -->, then the review in the
-          format above, then the line <!-- /review:${NONCE} -->. Nothing else
-          inside the markers; progress notes go outside them.
+          format above, then the line <!-- /review:${NONCE} -->. The review must
+          appear exactly once between the markers, and nothing else inside them;
+          progress notes go outside them.
           PROMPT_EOF
           )
           # ---- Everything the CLI would load as instructions or config comes
@@ -417,23 +418,27 @@ jobs:
              || [ -n "$(printf '%s\n' "$AUDIT_SHELL_DENIED" | jq -r "$AUDIT")" ]; then
             echo "::error::the tool-call audit self-test failed (it must flag a successful Shell and pass a Read and a denied Shell)" >&2; exit 1
           fi
-          # The review is the last complete block the model wrapped in this run's nonce
-          # markers; tool-call order and line starts do not decide anything. Assistant text
-          # pieces are joined in order (so token deltas and whole messages both rebuild the
-          # block); a stray earlier opener is dropped; no complete block -> empty output ->
-          # the step fails and the comment job posts "did not complete". There is no
-          # fallback to the CLI's `result`.
+          # The review is the ONE block the model wrapped in this run's nonce markers. No
+          # regex: the assistant text pieces are joined in order (token deltas and whole
+          # messages both rebuild the block) and split on the literal markers. Exactly one
+          # closing marker is required; none (no block, unclosed, wrong nonce) or two or more
+          # (a draft and a final, which could put a clean verdict over findings) give empty
+          # output, the step fails and the comment job posts "did not complete". Inside the
+          # block only the text after the last opening marker counts. No fallback to `result`.
           extract() {
-            # shellcheck disable=SC2016 # $open and $n are jq variables
+            # shellcheck disable=SC2016 # $open, $close and $n are jq variables
             jq -rsj --arg n "$1" '
               ("<!-- review:" + $n + " -->") as $open
+              | ("<!-- /review:" + $n + " -->") as $close
               | [ .[] | select(.type=="assistant")
                   | [ .message.content[]? | select(.type=="text") | .text ] | join("") ]
               | join("")
-              | [ scan("(?s)" + $open + "[ \\t]*\\n(.*?)\\n[ \\t]*<!-- /review:" + $n + " -->"; "g") | .[0] ]
-              | (last // "")
-              | split($open) | last // ""
-              | sub("^[ \\t]*\\n"; "")'
+              | split($close)
+              | if length != 2 then ""
+                else .[0] | split($open)
+                  | if length < 2 then ""
+                    else last | ltrimstr("\n") | rtrimstr("\n") end
+                end'
           }
           # Fixture self-test of the extractor (runs before the agent).
           XN=3f9c2a71d0be4e86
@@ -449,7 +454,7 @@ jobs:
           f_trailing_refused() { xblk "$XF"; xtc writeToolCall writePermissionDenied; xmsg "Done."; }
           f_trailing_shell() { xblk "$XF"; xtc shellToolCall success; }
           f_prose_around() { xmsg "Note before."$'\n\n'"$XOPEN"$'\n'"$XF"$'\n'"$XCLOSE"$'\n\nDone.'; }
-          f_last_wins() { xblk "$XC"; xtc readToolCall success; xblk "$XF"; }
+          f_two_blocks() { xblk "$XF"; xtc readToolCall success; xblk "$XC"; }
           f_deltas() { local s="Thinking. $XOPEN"$'\n'"$XF"$'\n'"$XCLOSE" i=0; while [ $i -lt ${#s} ]; do xmsg "${s:$i:7}"; i=$((i+7)); done; }
           f_stray_opener() { xmsg "I will wrap the review in $XOPEN"$'\nnotes\n'; xblk "$XF"; }
           f_no_block() { xmsg "## No actionable findings"; }
@@ -460,7 +465,7 @@ jobs:
           xfail=0
           xcheck() { local got; got=$("$2" | extract "$XN"); if [ "$got" != "$1" ]; then xfail=$((xfail+1)); echo "extract self-test FAIL: $2" >&2; fi; }
           xcheck "$XF" f_findings; xcheck "$XC" f_clean; xcheck "$XF" f_trailing_read; xcheck "$XF" f_trailing_refused
-          xcheck "$XF" f_trailing_shell; xcheck "$XF" f_prose_around; xcheck "$XF" f_last_wins; xcheck "$XF" f_deltas
+          xcheck "$XF" f_trailing_shell; xcheck "$XF" f_prose_around; xcheck "" f_two_blocks; xcheck "$XF" f_deltas
           xcheck "$XF" f_stray_opener; xcheck "" f_no_block; xcheck "" f_unclosed; xcheck "" f_wrong_nonce
           xcheck "$XF" f_quoted_template; xcheck "" f_empty
           if [ "$xfail" -ne 0 ]; then echo "::error::the review-extraction self-test failed ($xfail fixtures)" >&2; exit 1; fi
