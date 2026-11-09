@@ -305,6 +305,10 @@ jobs:
           tar --exclude=.git -cf - . | sudo tar -xf - -C /opt/review-ws
           # No symlink in the agent tree may lead outside it (a PR can add one).
           sudo find /opt/review-ws -type l ! -exec sh -c 'readlink -f "$1" | grep -q "^/opt/review-ws/"' _ {} \; -delete
+          # Withhold secret files (and, where the repo names them, data directories) from the
+          # agent tree, matched case-insensitively with -iname/-ipath: the CLI's Read denies
+          # are case-sensitive globs, so `.ENV` or `Key.PEM` would otherwise slip past them.
+          sudo find /opt/review-ws \( -iname '.env' -o -iname '.env.*' -o -iname '*.pem' -o -iname '*.key' -o -iname '*.salt' \) -prune -exec rm -rf {} +
           # The base commit's AGENTS.md and CLAUDE.md (nested ones too) are reference copies
           # under names the CLI does not auto-load (.md.txt, same relative path).
           sudo rm -rf /opt/review-ws/.review-context
