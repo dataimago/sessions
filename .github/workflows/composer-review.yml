@@ -114,8 +114,9 @@ jobs:
     # The job limit is a backstop above the agent's own 40-minute limit below. A job
     # that hits timeout-minutes ends "cancelled", and the comment job skips cancelled
     # runs, so a stale "Reviewed" comment would stand; the inner limit turns a slow
-    # review into an ordinary failure, which posts "did not complete".
-    timeout-minutes: 55
+    # review into an ordinary failure, which posts "did not complete". Each step
+    # below has its own limit, so a hang fails there; the sum stays under this one.
+    timeout-minutes: 70
     permissions:
       contents: read
     outputs:
@@ -129,8 +130,8 @@ jobs:
 
       # A step that hangs must FAIL (the comment job then posts "did not
       # complete"), not run into the job limit, which ends the job "cancelled".
-      # The step limits (5 + 3 + 44 + 2 for the upload) stay below the 55-minute
-      # job limit.
+      # The step limits (5 + 3 + 44 + 2 for the upload = 54 minutes) leave 16
+      # minutes under the 70-minute job limit for the gate step and post actions.
       - name: Checkout PR head (no credentials persist)
         if: steps.gate.outputs.enabled == 'true'
         timeout-minutes: 5
