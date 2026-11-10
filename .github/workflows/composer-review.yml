@@ -454,38 +454,53 @@ jobs:
              || [ -n "$(printf '%s\n' "$AUDIT_SHELL_DENIED" | jq -r "$AUDIT")" ]; then
             echo "::error::the tool-call audit self-test failed (it must flag a successful Shell, Task and readLints and pass a Read and a denied Shell)" >&2; exit 1
           fi
-          # The review is the ONE block the model wrapped in this run's nonce markers. No
-          # regex flags: the assistant text pieces are joined in order (token deltas and whole
-          # messages both rebuild the text) and split on the literal markers. Every ambiguous
-          # shape gives empty output, the step fails and the comment job posts "did not
-          # complete", never a clean verdict over findings: not exactly one opening and one
-          # closing marker (opener first); a block that is not exactly one kind of verdict
-          # (the clean heading or a finding heading, matched at line start as lain's
-          # parseReview matches them, so a heading quoted mid-line is prose); a clean block
-          # while a finding heading appears anywhere outside it. No fallback to `result`.
+          # The review is the ONE block the model wrapped in this run's nonce markers (extractor
+          # v5). No regex flags: the assistant text pieces are joined in order (token deltas and
+          # whole messages both rebuild the text), CRLF becomes LF, and the text is split on the
+          # literal markers. Every ambiguous shape gives empty output, the step fails and the
+          # comment job posts "did not complete", never a clean verdict over findings: not exactly
+          # one opening and one closing marker (opener first); a block that is not exactly one
+          # kind of verdict (clean heading or finding heading at line start, as lain's
+          # parseReview matches them); a clean block while a finding heading STARTS A LINE
+          # outside it (each assistant message starts a new line for that check, so a template
+          # quoted mid-line in a progress note is prose; if the markers do not survive that
+          # join, any outside finding heading counts). No fallback to `result`. Whitespace ($w)
+          # and line starts ($t) are JavaScript's \s and /m line terminators, so every line
+          # lain's parseReview reads as a verdict heading is one here too: parseReview checks
+          # the clean sentinel first, so a block it would read as clean while it carries a
+          # finding must fail closed (v5; a differential fuzz against parseReview found the
+          # v4 gap with no-break spaces, lone CR and U+2028).
           extract() {
-            # shellcheck disable=SC2016 # $open, $close, $clean, $finding, $n are jq variables
+            # shellcheck disable=SC2016 # $open, $close, $w, $t, $clean, $finding, $n, $a, $b, $s are jq variables
             jq -rsj --arg n "$1" '
               ("<!-- review:" + $n + " -->") as $open
               | ("<!-- /review:" + $n + " -->") as $close
-              | "(^|\n)##[ \t]*No actionable findings[ \t]*(\n|$)" as $clean
-              | "(^|\n)###[ \t]*(\\[P[0-3]\\]|Alignment concern:)" as $finding
-              | [ .[] | select(.type=="assistant")
-                  | [ .message.content[]? | select(.type=="text") | .text ] | join("") ]
-              | join("")
-              | split("\r\n") | join("\n")
-              | (split($open) | length) as $no
-              | (split($close) | length) as $nc
-              | if $no != 2 or $nc != 2 then ""
-                else split($open) as [$before, $rest]
-                  | ($rest | split($close)) as $p
+              | "[\\t\\n\\x{0b}\\f\\r \\x{a0}\\x{1680}\\x{2000}-\\x{200a}\\x{2028}\\x{2029}\\x{202f}\\x{205f}\\x{3000}\\x{feff}]" as $w
+              | "[\\n\\r\\x{2028}\\x{2029}]" as $t
+              | ("(^|" + $t + ")##" + $w + "*No actionable findings" + $w + "*(" + $t + "|$)") as $clean
+              | ("(^|" + $t + ")###" + $w + "*(\\[P[0-3]\\]|Alignment concern:)") as $finding
+              | def outside($s): ($s | split($open)) as $a
+                  | if ($a | length) != 2 then null
+                    else ($a[1] | split($close)) as $b
+                      | if ($b | length) != 2 then null else $a[0] + "\n" + $b[1] end
+                    end;
+              [ .[] | select(.type=="assistant")
+                | [ .message.content[]? | select(.type=="text") | .text ] | join("")
+                | split("\r\n") | join("\n") ] as $msgs
+              | ($msgs | join("")) as $all
+              | if ($all | split($open) | length) != 2 or ($all | split($close) | length) != 2 then ""
+                else ($all | split($open)[1] | split($close)) as $p
                   | if ($p | length) != 2 then ""
                     else ($p[0] | ltrimstr("\n") | rtrimstr("\n")) as $block
-                      | ($before + $p[1]) as $outside
                       | ($block | test($clean)) as $c
                       | ($block | test($finding)) as $f
-                      | if ($c and $f) or ($c | not) and ($f | not) then ""
-                        elif $c and ($outside | test("###[ \t]*(\\[P[0-3]\\]|Alignment concern:)")) then ""
+                      | if ($c and $f) or (($c | not) and ($f | not)) then ""
+                        elif $c then
+                          (outside($msgs | join("\n"))) as $o
+                          | if $o == null then
+                              (if (outside($all) // "") | test("###" + $w + "*(\\[P[0-3]\\]|Alignment concern:)") then "" else $block end)
+                            elif ($o | test($finding)) then ""
+                            else $block end
                         else $block end
                     end
                 end'
@@ -515,13 +530,30 @@ jobs:
           f_prose_around(){ xmsg "Note before."$'\n\n'"$XOPEN"$'\n'"$XF"$'\n'"$XCLOSE"$'\n\nDone.'; }
           f_deltas(){ local s="Thinking. $XOPEN"$'\n'"$XF"$'\n'"$XCLOSE" i=0; while [ $i -lt ${#s} ]; do xmsg "${s:$i:7}"; i=$((i+7)); done; }
           f_quoted_template(){ xmsg "Quoting: <!-- review:\${NONCE} --> ..."; xblk "$XF"; }
+          f_note_quotes_template(){ xmsg "I will format findings as ### [P1] headings, or ## No actionable findings."; xblk "$XC"; }
+          f_note_quotes_alignment(){ xmsg "Checking for any ### Alignment concern: lines."; xtc readToolCall success; xblk "$XC"; }
+          f_deltas_clean_heading_outside(){ local s="Reading. ### [P1] example. $XOPEN"$'\n'"$XC"$'\n'"$XCLOSE" i=0; while [ $i -lt ${#s} ]; do xmsg "${s:$i:7}"; i=$((i+7)); done; }
+          f_mixed_crlf(){ xblk "$XF"$'\r\n\r\n'"$XC"; }
+          f_crlf_clean(){ xmsg "$XOPEN"$'\r\n## No actionable findings\r\n\r\nTwo sentences.\r\n'"$XCLOSE"; }
           f_findings_note_outside(){ xmsg "Checked ## No actionable findings is not warranted."; xblk "$XF"; }
-          # fail closed: empty
+          f_nbsp_clean(){ xblk $'##\xc2\xa0No actionable findings\n\nTwo sentences.'; }
+          # fail closed: empty. The mixed_* blocks put a finding beside a clean line that only
+          # JavaScript's \s or line starts make a sentinel (no-break space, lone CR, U+2028,
+          # a heading split over lines, vertical tab, ideographic space).
+          f_mixed_nbsp_clean(){ xblk "$XF"$'\n\n##\xc2\xa0No actionable findings'; }
+          f_mixed_trailing_nbsp(){ xblk "$XF"$'\n\n## No actionable findings\xc2\xa0'; }
+          f_mixed_lone_cr(){ xblk $'### [P1] X\r## No actionable findings'; }
+          f_mixed_ls(){ xblk $'### [P1] X\xe2\x80\xa8## No actionable findings'; }
+          f_mixed_crossline(){ xblk "$XF"$'\n\n##\n\nNo actionable findings'; }
+          f_mixed_nbsp_finding(){ xblk $'## No actionable findings\n\n###\xc2\xa0[P1] hidden'; }
+          f_mixed_vt(){ xblk "$XF"$'\n\n##\vNo actionable findings'; }
+          f_mixed_ideographic(){ xblk "$XF"$'\n\n##\xe3\x80\x80No actionable findings\xe3\x80\x80'; }
+          f_nbsp_finding_outside_clean(){ xmsg $'x\n###\xc2\xa0[P0] outside'; xblk "$XC"; }
           f_two_blocks(){ xblk "$XF"; xtc readToolCall success; xblk "$XC"; }
           f_second_opener_clean_tail(){ xmsg "$XOPEN"$'\n'"$XF"$'\n'"$XOPEN"$'\n'"$XC"$'\n'"$XCLOSE"; }
           f_stray_opener(){ xmsg "I will wrap the review in $XOPEN"; xblk "$XF"; }
           f_findings_outside_clean_inside(){ xmsg $'### [P0] Left outside\n**Location:** e:5'; xblk "$XC"; }
-          f_glued_finding_outside(){ xmsg "Reading.### [P1] glued"; xblk "$XC"; }
+          f_glued_finding_outside(){ xmsg "Reading."; xmsg $'### [P1] glued\n**Location:** x:1'; xblk "$XC"; }
           f_mixed_block(){ xblk "$XF"$'\n\n'"$XC"; }
           f_mixed_spaced(){ xblk $'###  [P1] X\n\n##  No actionable findings'; }
           f_no_verdict(){ xblk "Looks fine to me."; }
@@ -529,17 +561,19 @@ jobs:
           f_unclosed(){ xmsg "$XOPEN"$'\n'"$XF"; }
           f_wrong_nonce(){ xmsg "<!-- review:0000 -->"$'\n'"$XC"$'\n'"<!-- /review:0000 -->"; }
           f_close_first(){ xmsg "$XCLOSE"$'\n'"$XC"$'\n'"$XOPEN"; }
-          f_mixed_crlf(){ xblk "$XF"$'\r\n\r\n'"$XC"; }
           f_empty(){ :; }
           xpass=0; xfail=0
           xcheck(){ local got; got=$("$2" | extract "$XN"); if [ "$got" = "$1" ]; then xpass=$((xpass+1)); else xfail=$((xfail+1)); echo "extract self-test FAIL: $2" >&2; fi; }
           xcheck "$XF" f_findings; xcheck "$XFI" f_intro_finding; xcheck "$XAC" f_alignment; xcheck "$XFQ" f_finding_quotes_clean
           xcheck "$XC" f_clean; xcheck "$XCQ" f_clean_quotes_finding; xcheck "$XF" f_trailing_read; xcheck "$XF" f_trailing_refused
           xcheck "$XF" f_trailing_shell; xcheck "$XF" f_prose_around; xcheck "$XF" f_deltas; xcheck "$XF" f_quoted_template
-          xcheck "$XF" f_findings_note_outside
+          xcheck "$XF" f_findings_note_outside; xcheck "$XC" f_note_quotes_template; xcheck "$XC" f_note_quotes_alignment; xcheck "$XC" f_crlf_clean
+          xcheck $'##\xc2\xa0No actionable findings\n\nTwo sentences.' f_nbsp_clean
           for f in f_two_blocks f_second_opener_clean_tail f_stray_opener f_findings_outside_clean_inside \
                    f_glued_finding_outside f_mixed_block f_mixed_spaced f_no_verdict f_no_block f_unclosed \
-                   f_wrong_nonce f_close_first f_mixed_crlf f_empty; do xcheck "" "$f"; done
+                   f_wrong_nonce f_close_first f_mixed_crlf f_deltas_clean_heading_outside f_empty \
+                   f_mixed_nbsp_clean f_mixed_trailing_nbsp f_mixed_lone_cr f_mixed_ls f_mixed_crossline \
+                   f_mixed_nbsp_finding f_mixed_vt f_mixed_ideographic f_nbsp_finding_outside_clean; do xcheck "" "$f"; done
           if [ "$xfail" -ne 0 ]; then echo "::error::the review-extraction self-test failed ($xfail fixtures)" >&2; exit 1; fi
           # The leak scan patterns for a key, one per line: the key, its hex in both letter
           # cases, and the stable middle of its base64 at each of the three alignments (the
@@ -556,18 +590,27 @@ jobs:
               if [ "${#mid}" -ge 8 ]; then printf '%s\n' "$mid"; fi
             done
           }
+          # leak_hit FILE PATTERNFILE: does FILE, whitespace removed, contain any pattern?
+          # Exit 0 hit, 1 no hit, 2 the scan itself failed. It greps a flattened copy, never a
+          # pipe into grep -q: under pipefail an early match kills the writer with SIGPIPE and
+          # the pipeline reads as "no match" on a large file. The copy is private (umask 077).
+          leak_hit() {
+            ( umask 077; tr -d '[:space:]' < "$1" > "$RUNNER_TEMP/flat" ) || return 2
+            grep -qF -f "$2" "$RUNNER_TEMP/flat"
+          }
           # Self-test with a fake key: raw, lower and upper hex and base64 at three alignments
-          # must hit; unrelated text must not.
+          # must hit, and so must the key at the start of a 4 MB input; unrelated text must not.
           LK=lkTESTKEY0123456789abcdefXYZ
           ( umask 077; leak_patterns "$LK" > "$RUNNER_TEMP/lk.pat" )
-          lkhit() { tr -d '[:space:]' | grep -qF -f "$RUNNER_TEMP/lk.pat"; }
+          lkhit() { cat > "$RUNNER_TEMP/lk.in"; leak_hit "$RUNNER_TEMP/lk.in" "$RUNNER_TEMP/lk.pat"; }
           lkfail=0
           printf 'x %s y' "$LK" | lkhit || lkfail=1
           printf '%s' "$LK" | od -An -tx1 | lkhit || lkfail=1
           printf '%s' "$LK" | od -An -tx1 | tr 'a-f' 'A-F' | lkhit || lkfail=1
           for pre in "" q qq; do printf '%s' "${pre}${LK}!tail" | base64 | fold -w 20 | lkhit || lkfail=1; done
+          { printf '%s' "$LK"; head -c 4000000 /dev/zero | tr '\0' a; } | lkhit || lkfail=1
           if printf 'unrelated text' | lkhit; then lkfail=1; fi
-          rm -f "$RUNNER_TEMP/lk.pat"
+          rm -f "$RUNNER_TEMP/lk.pat" "$RUNNER_TEMP/lk.in" "$RUNNER_TEMP/flat"
           if [ "$lkfail" -ne 0 ]; then echo "::error::the leak-scan self-test failed" >&2; exit 1; fi
           # ---- Run the reviewer. --trust only skips the interactive trust prompt.
           # The key reaches the CLI as the review user's environment only.
@@ -591,7 +634,7 @@ jobs:
           # stripped (a trailing newline would otherwise add an empty pattern that
           # matches every line); the key itself is never printed.
           # Private (umask 077) and removed on every exit path of this step.
-          trap 'rm -f "$RUNNER_TEMP/key.pat"' EXIT
+          trap 'rm -f "$RUNNER_TEMP/key.pat" "$RUNNER_TEMP/flat"' EXIT
           # One pattern per line (leak_patterns, tested before the agent runs): the key, its hex
           # in both letter cases, and the stable middle of its
           # base64 at each of the three alignments (the first and last groups depend on
@@ -621,12 +664,14 @@ jobs:
           LEAK=
           for f in composer-review.md proxy.log review-stderr.log review-events.jsonl; do
             [ -f "$f" ] || continue
-            if tr -d '[:space:]' < "$f" | grep -qF -f "$RUNNER_TEMP/key.pat"; then LEAK=1; fi
+            # A scan that fails (exit 2) counts as a leak: fail closed.
+            rc=0; leak_hit "$f" "$RUNNER_TEMP/key.pat" || rc=$?
+            if [ "$rc" -ne 1 ]; then LEAK=1; fi
           done
-          rm -f "$RUNNER_TEMP/key.pat"
+          rm -f "$RUNNER_TEMP/key.pat" "$RUNNER_TEMP/flat"
           if [ -n "$LEAK" ]; then
             : > composer-review.md; : > proxy.log; : > review-stderr.log; : > review-events.jsonl
-            echo "::error::agent output contained CURSOR_API_KEY; everything was discarded and nothing was published. Rotate the key." >&2
+            echo "::error::agent output contained CURSOR_API_KEY, or could not be scanned for it; everything was discarded and nothing was published. If it was not a scan error, rotate the key." >&2
             exit 1
           fi
           [ "${STATUS:-}" = failed ] && { echo "::error::cursor-agent failed" >&2; tail -n 20 review-stderr.log | tr -d '\r' | sed 's/^/    /' >&2 || true; }
@@ -700,6 +745,9 @@ jobs:
           name: composer-review-${{ github.event.pull_request.number }}
 
       - name: Post or update the review comment
+        # Runs even when the download failed: the body then says "did not complete",
+        # so an older "Reviewed" heading never stands for this commit.
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           # This job has no checkout, so gh cannot infer the repo from a remote —
@@ -740,11 +788,18 @@ jobs:
               echo
               echo "Add it with \`gh secret set CURSOR_API_KEY --repo ${GITHUB_REPOSITORY}\`, then re-run this workflow or push again. The review will replace this notice."
             } > body.md
-          else
-          if [ ! -s composer-review.md ]; then
+          elif [ ! -s composer-review.md ]; then
+            # The review job succeeded but its output did not arrive (a failed download) or is
+            # empty: replace the comment, then fail the job.
             echo "::error::composer-review.md missing or empty — the review job produced no output to post" >&2
-            exit 1
-          fi
+            NO_REVIEW=1
+            {
+              echo "$MARKER"
+              echo "## Grok 4.6 PR Review: did not complete for \`${HEAD_SHA:0:8}\`"
+              echo
+              echo "_The review job finished, but its output did not reach the comment job, so **no review of this commit exists**. Any earlier review on this PR covers an older commit. See [the run](${RUN_URL}); re-run it or push again._"
+            } > body.md
+          else
           {
             echo "$MARKER"
             echo "## Grok 4.6 PR Review (first-party pool, xhigh)"
@@ -765,3 +820,4 @@ jobs:
           else
             gh pr comment "$PR_NUMBER" --body-file body.md
           fi
+          if [ -n "${NO_REVIEW:-}" ]; then exit 1; fi
