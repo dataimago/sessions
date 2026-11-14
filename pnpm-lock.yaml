@@ -15,14 +15,14 @@ importers:
         specifier: 4.0.89
         version: 4.0.89(zod@4.5.4)
       '@dataimago/brand':
-        specifier: ^0.1.0-alpha.7
-        version: 0.1.0-alpha.7
+        specifier: ^0.1.0-alpha.8
+        version: 0.1.0-alpha.8
       '@dataimago/css':
-        specifier: ^0.1.0-alpha.15
-        version: 0.1.0-alpha.15
+        specifier: ^0.1.0-alpha.54
+        version: 0.1.0-alpha.54(tailwindcss@3.4.19)
       '@dataimago/tokens':
-        specifier: ^0.1.0-alpha.15
-        version: 0.1.0-alpha.15
+        specifier: ^0.1.0-alpha.54
+        version: 0.1.0-alpha.54
       '@modelcontextprotocol/sdk':
         specifier: 1.32.1
         version: 1.32.1(zod@4.5.4)
@@ -177,14 +177,20 @@ packages:
     resolution: {integrity: sha512-Vj1jF3cPfxg7OAfoI7QnVKLoILlm2JF9pnVHrX8qx7AHMiYWT+NDAA7jChlNgRS4WTLc/fD1lXLmPixluj+3Gg==}
     engines: {node: '>=6.9.0'}
 
-  '@dataimago/brand@0.1.0-alpha.7':
-    resolution: {integrity: sha512-QgBEYyw9NciGQbCP2MkrZmSHz7eFDQO+paHJozi8giN3j2NWULVC2v9OORl2fmYdJibMisBXDDtf2XVaNs/jzA==}
+  '@dataimago/brand@0.1.0-alpha.8':
+    resolution: {integrity: sha512-Bb364oXQecmH48rM55GXsdG9uktV9wsqzueBaYftPajXOGW+bD2mT1w8JfkOFkfqk1Kf8WJc1KiA+67r6DvZpQ==}
 
-  '@dataimago/css@0.1.0-alpha.15':
-    resolution: {integrity: sha512-xxDQ69ZF2FAeYdvPGNFH5btIgvKftdQzo/5Rg/g3EFV6uRT7V95/8cu1i7pII1yuuIrP0jSKuTPPFFzEXQxI3A==}
+  '@dataimago/css@0.1.0-alpha.54':
+    resolution: {integrity: sha512-IqvXI393dLgsUxleLaSn1k3HmDC+YprHFJmdY7UaAPJuL0AzXtFiukJI7Xn+9Ebc/wkx6QNlb+hJlEDHREEqHg==}
+    hasBin: true
+    peerDependencies:
+      tailwindcss: '>=3.0.0'
+    peerDependenciesMeta:
+      tailwindcss:
+        optional: true
 
-  '@dataimago/tokens@0.1.0-alpha.15':
-    resolution: {integrity: sha512-G2XzH6gNBz+cRWQLgvqNym9EoKrhigBfN+aFISRPGUm8iN3NHIiF98v5Lb0JS8RzJ80sk90VjtF5sWa9EYKAJg==}
+  '@dataimago/tokens@0.1.0-alpha.54':
+    resolution: {integrity: sha512-pbde7GdFPE8aqf1ZW2ywIa/JuNdqZoRcTdi4NuQ9PVrracJ7Khwvm4bTiZ7IEkgxp03P/NDd7pOaScyDVeLT+A==}
 
   '@emnapi/core@1.10.0':
     resolution: {integrity: sha512-yq6OkJ4p82CAfPl0u9mQebQHKPJkY7WrIuk205cTYnYe+k2Z8YBh11FrbRG/H6ihirqcacOgl2BIO8oyMQLeXw==}
@@ -2805,13 +2811,15 @@ snapshots:
       '@babel/helper-string-parser': 7.29.7
       '@babel/helper-validator-identifier': 7.29.7
 
-  '@dataimago/brand@0.1.0-alpha.7': {}
+  '@dataimago/brand@0.1.0-alpha.8': {}
 
-  '@dataimago/css@0.1.0-alpha.15':
+  '@dataimago/css@0.1.0-alpha.54(tailwindcss@3.4.19)':
     dependencies:
-      '@dataimago/tokens': 0.1.0-alpha.15
+      '@dataimago/tokens': 0.1.0-alpha.54
+    optionalDependencies:
+      tailwindcss: 3.4.19
 
-  '@dataimago/tokens@0.1.0-alpha.15': {}
+  '@dataimago/tokens@0.1.0-alpha.54': {}
 
   '@emnapi/core@1.10.0':
     dependencies:
