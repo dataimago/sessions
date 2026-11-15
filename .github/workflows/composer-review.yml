@@ -1,10 +1,13 @@
-name: Grok 4.6 PR Review
+name: Grok 4.7 PR Review
 
-# Fast-layer PR review on Cursor's first-party pool (Grok 4.6 extra-high),
+# Fast-layer PR review on Cursor's first-party pool (Grok 4.7, medium effort),
 # replacing automatic Bugbot reviews after the 2026-08-07 finding that Bugbot's
 # model is not account-selectable and its runs draw the other-models pool.
-# Grok 4.6 is first-party Cursor Models pool (same treatment as Composer);
-# xhigh is the effort pin. Bugbot remains installed for on-demand review
+# Grok 4.7 is first-party Cursor Models pool (same treatment as Composer);
+# medium is the effort pin (Grok 4.6 xhigh until 2026-11-15; review bake-off,
+# SGPc-wiki log 2026-11-15). The 4.7 ID drops the cursor- prefix that 4.6
+# carries: `grok-4.7-medium`, not `cursor-grok-4.7-medium`, which does not
+# exist. Bugbot remains installed for on-demand review
 # (`bugbot run` comment) on governance-heavy PRs. Review instructions are
 # sourced from .cursor/BUGBOT.md (one source, many channels) — edit that file,
 # not this prompt, to tune review behavior. ADVISORY: not a required check.
@@ -92,8 +95,8 @@ name: Grok 4.6 PR Review
 #
 # Activation requires the CURSOR_API_KEY repository secret (maintainer-minted;
 # cursor.com dashboard -> API keys). Absent the secret, the review job warns
-# and the comment job posts "Grok 4.6 PR Review: NOT RUN"; a real review posts
-# "Grok 4.6 PR Review (first-party pool, xhigh)" and replaces that notice. A
+# and the comment job posts "Grok 4.7 PR Review: NOT RUN"; a real review posts
+# "Grok 4.7 PR Review (first-party pool, medium)" and replaces that notice. A
 # green check, or a marked comment, is not proof of review: read the heading.
 #
 # HARDENING (Layer 1, ported from dissertation-ai#265; Layer 2 above, from dissertation-ai#274): both jobs have a
@@ -123,7 +126,7 @@ env:
 
 jobs:
   review:
-    name: Grok 4.6 Review (first-party pool, xhigh)
+    name: Grok 4.7 Review (first-party pool, medium)
     if: >-
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
@@ -181,7 +184,7 @@ jobs:
           echo "Installed cursor-agent ${GOT} (pinned ${CURSOR_CLI_VERSION}, sha256 verified)" | tee -a "$GITHUB_STEP_SUMMARY"
           case "$GOT" in *"${CURSOR_CLI_VERSION}"*) ;; *) echo "::error::installed version '${GOT}' is not the pinned ${CURSOR_CLI_VERSION}" >&2; exit 1;; esac
 
-      - name: Review diff with Grok 4.6 (no GitHub credentials)
+      - name: Review diff with Grok 4.7 (no GitHub credentials)
         if: success() && steps.gate.outputs.enabled == 'true'
         timeout-minutes: 55
         env:
@@ -618,7 +621,7 @@ jobs:
           # shellcheck disable=SC2024,SC2016 # the redirects are meant to be the runner's own; the bash -c body expands in the review user's shell
           timeout --kill-after=60s 40m \
           sudo -H --preserve-env=CURSOR_API_KEY,HTTPS_PROXY,HTTP_PROXY,NODE_USE_ENV_PROXY,CURSOR_CONFIG_DIR -u cursor-review \
-              bash -c 'cd /opt/review-ws && exec env -i HOME=/home/cursor-review USER=cursor-review PATH=/usr/local/bin:/usr/bin:/bin CURSOR_CONFIG_DIR="$CURSOR_CONFIG_DIR" HTTPS_PROXY="$HTTPS_PROXY" HTTP_PROXY="$HTTP_PROXY" NODE_USE_ENV_PROXY=1 CURSOR_API_KEY="$CURSOR_API_KEY" /opt/cursor-agent/cursor-agent --print "$0" --trust --workspace /opt/review-ws --model cursor-grok-4.6-xhigh --output-format stream-json' "$PROMPT" \
+              bash -c 'cd /opt/review-ws && exec env -i HOME=/home/cursor-review USER=cursor-review PATH=/usr/local/bin:/usr/bin:/bin CURSOR_CONFIG_DIR="$CURSOR_CONFIG_DIR" HTTPS_PROXY="$HTTPS_PROXY" HTTP_PROXY="$HTTP_PROXY" NODE_USE_ENV_PROXY=1 CURSOR_API_KEY="$CURSOR_API_KEY" /opt/cursor-agent/cursor-agent --print "$0" --trust --workspace /opt/review-ws --model grok-4.7-medium --output-format stream-json' "$PROMPT" \
               > review-events.jsonl 2> review-stderr.log || {
                 RC=$?; STATUS=failed
                 if [ "$RC" -eq 124 ] || [ "$RC" -eq 137 ]; then echo "::error::the review did not finish within 40 minutes" >&2; fi
@@ -775,14 +778,14 @@ jobs:
           if [ "$REVIEW_RESULT" != "success" ]; then
             {
               echo "$MARKER"
-              echo "## Grok 4.6 PR Review: did not complete for \`${HEAD_SHA:0:8}\`"
+              echo "## Grok 4.7 PR Review: did not complete for \`${HEAD_SHA:0:8}\`"
               echo
               echo "_The review job ended in \`${REVIEW_RESULT}\` on this commit, so **no review of it exists**. Any earlier review on this PR covers an older commit. See [the run](${RUN_URL}); re-run it or push again._"
             } > body.md
           elif [ "$ENABLED" != "true" ]; then
             {
               echo "$MARKER"
-              echo "## Grok 4.6 PR Review: NOT RUN"
+              echo "## Grok 4.7 PR Review: NOT RUN"
               echo
               echo "_\`${HEAD_SHA:0:8}\` was **not reviewed**: this repository has no \`CURSOR_API_KEY\` secret._"
               echo
@@ -795,16 +798,16 @@ jobs:
             NO_REVIEW=1
             {
               echo "$MARKER"
-              echo "## Grok 4.6 PR Review: did not complete for \`${HEAD_SHA:0:8}\`"
+              echo "## Grok 4.7 PR Review: did not complete for \`${HEAD_SHA:0:8}\`"
               echo
               echo "_The review job finished, but its output did not reach the comment job, so **no review of this commit exists**. Any earlier review on this PR covers an older commit. See [the run](${RUN_URL}); re-run it or push again._"
             } > body.md
           else
           {
             echo "$MARKER"
-            echo "## Grok 4.6 PR Review (first-party pool, xhigh)"
+            echo "## Grok 4.7 PR Review (first-party pool, medium)"
             echo
-            echo "_Reviewed \`${HEAD_SHA:0:8}\` with cursor-grok-4.6-xhigh; instructions sourced from .cursor/BUGBOT.md_"
+            echo "_Reviewed \`${HEAD_SHA:0:8}\` with grok-4.7-medium; instructions sourced from .cursor/BUGBOT.md_"
             echo
             cat composer-review.md
           } > body.md
