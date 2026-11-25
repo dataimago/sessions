@@ -481,7 +481,8 @@ jobs:
               | "[\\t\\n\\x{0b}\\f\\r \\x{a0}\\x{1680}\\x{2000}-\\x{200a}\\x{2028}\\x{2029}\\x{202f}\\x{205f}\\x{3000}\\x{feff}]" as $w
               | "[\\n\\r\\x{2028}\\x{2029}]" as $t
               | ("(^|" + $t + ")##" + $w + "*No actionable findings" + $w + "*(" + $t + "|$)") as $clean
-              | ("(^|" + $t + ")###" + $w + "*(\\[P[0-3]\\]|Alignment concern:)") as $finding
+              | "(\\[P[0-3]\\]|P[0-3]\\b|Alignment concern:)" as $sev
+              | ("(^|" + $t + ")###" + $w + "*" + $sev) as $finding
               | def outside($s): ($s | split($open)) as $a
                   | if ($a | length) != 2 then null
                     else ($a[1] | split($close)) as $b
@@ -501,10 +502,13 @@ jobs:
                         elif $c then
                           (outside($msgs | join("\n"))) as $o
                           | if $o == null then
-                              (if (outside($all) // "") | test("###" + $w + "*(\\[P[0-3]\\]|Alignment concern:)") then "" else $block end)
+                              (if (outside($all) // "") | test("###" + $w + "*" + $sev) then "" else $block end)
                             elif ($o | test($finding)) then ""
                             else $block end
-                        else $block end
+                        else $block
+                          # Post one heading form: `### P2 x` becomes `### [P2] x`.
+                          | gsub("(?<h>(^|" + $t + ")###" + $w + "*)P(?<d>[0-3])\\b"; "\(.h)[P\(.d)]")
+                        end
                     end
                 end'
           }
@@ -540,6 +544,18 @@ jobs:
           f_crlf_clean(){ xmsg "$XOPEN"$'\r\n## No actionable findings\r\n\r\nTwo sentences.\r\n'"$XCLOSE"; }
           f_findings_note_outside(){ xmsg "Checked ## No actionable findings is not warranted."; xblk "$XF"; }
           f_nbsp_clean(){ xblk $'##\xc2\xa0No actionable findings\n\nTwo sentences.'; }
+          # v6: unbracketed severities count as findings and are posted bracketed.
+          XFU=$'### P2 Unbracketed\n**Location:** a:1\n\n### [P1] Bracketed\n**Location:** b:2'
+          XFUN=$'### [P2] Unbracketed\n**Location:** a:1\n\n### [P1] Bracketed\n**Location:** b:2'
+          XCU=$'## No actionable findings\n\nThe diff renames a `### P1` example in prose.'
+          f_unbracketed(){ xmsg "Reading."; xblk "$XFU"; }
+          f_unbracketed_tight(){ xblk $'###P3: tight\n**Location:** c:3'; }
+          f_clean_quotes_unbracketed(){ xblk "$XCU"; }
+          f_mixed_unbracketed(){ xblk $'### P1 X\n\n## No actionable findings'; }
+          f_mixed_nbsp_unbracketed(){ xblk $'## No actionable findings\n\n###\xc2\xa0P1 hidden'; }
+          f_unbracketed_outside_clean_inside(){ xmsg $'### P0 Left outside\n**Location:** e:5'; xblk "$XC"; }
+          f_glued_unbracketed_outside(){ xmsg "Reading."; xmsg $'### P1 glued\n**Location:** x:1'; xblk "$XC"; }
+          f_not_a_severity(){ xblk $'### P10 not a severity\n\n### Priority notes'; }
           # fail closed: empty. The mixed_* blocks put a finding beside a clean line that only
           # JavaScript's \s or line starts make a sentinel (no-break space, lone CR, U+2028,
           # a heading split over lines, vertical tab, ideographic space).
@@ -572,6 +588,9 @@ jobs:
           xcheck "$XF" f_trailing_shell; xcheck "$XF" f_prose_around; xcheck "$XF" f_deltas; xcheck "$XF" f_quoted_template
           xcheck "$XF" f_findings_note_outside; xcheck "$XC" f_note_quotes_template; xcheck "$XC" f_note_quotes_alignment; xcheck "$XC" f_crlf_clean
           xcheck $'##\xc2\xa0No actionable findings\n\nTwo sentences.' f_nbsp_clean
+          xcheck "$XFUN" f_unbracketed; xcheck $'###[P3]: tight\n**Location:** c:3' f_unbracketed_tight; xcheck "$XCU" f_clean_quotes_unbracketed
+          for f in f_mixed_unbracketed f_mixed_nbsp_unbracketed f_unbracketed_outside_clean_inside \
+                   f_glued_unbracketed_outside f_not_a_severity; do xcheck "" "$f"; done
           for f in f_two_blocks f_second_opener_clean_tail f_stray_opener f_findings_outside_clean_inside \
                    f_glued_finding_outside f_mixed_block f_mixed_spaced f_no_verdict f_no_block f_unclosed \
                    f_wrong_nonce f_close_first f_mixed_crlf f_deltas_clean_heading_outside f_empty \
